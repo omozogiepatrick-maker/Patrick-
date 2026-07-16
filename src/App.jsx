@@ -47,7 +47,7 @@ const WO_STATUS_COLOR = {
   "Waiting for Parts": "#FB7A3C", Completed: "#34D399", Closed: "#5B6672",
 };
 const DECISION_STATUS_COLOR = { Pending: "#F5A623", Approved: "#34D399", Delayed: "#4C9FE5", Rejected: "#E5484D" };
-const ROLES = ["Manager", "Planner", "Technician", "Administrator"];
+const ROLES = ["Manager", "Supervisor", "Technician", "Administrator", "Executive"];
 
 function uid(p) { return p + "_" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4); }
 function fmtDate(iso) { if (!iso) return "—"; return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); }
@@ -116,6 +116,44 @@ function computeTechnicianMatch(machine, data) {
   }).sort((a, b) => b.score - a.score);
 }
 
+/* Creates a work order from an approved decision — unless an active (not
+   completed/closed) work order already exists for that machine, in which
+   case it links to the existing one instead of creating a duplicate. */
+function createWorkOrderForDecision(d, decision, chosenTechnician) {
+  const existingActive = d.workOrders.find((w) => w.machineId === decision.machineId && w.status !== "Completed" && w.status !== "Closed");
+  if (existingActive) {
+    return { workOrders: d.workOrders, woCounter: d.woCounter || 0, workOrderId: existingActive.id, duplicatePrevented: true, woNumber: existingActive.woNumber };
+  }
+  const woCounter = (d.woCounter || 0) + 1;
+  const woNumber = "WO-" + String(woCounter).padStart(4, "0");
+  const wo = {
+    id: uid("wo"), woNumber, machineId: decision.machineId, assignedTech: chosenTechnician || decision.suggestedTechnician || "Unassigned",
+    priority: decision.risk, dueDate: new Date().toISOString(), requiredParts: decision.requiredParts || "", estimatedHours: null,
+    status: chosenTechnician || decision.suggestedTechnician ? "Assigned" : "Pending", decisionId: decision.id, technicianNotes: "",
+    startedAt: null, completedAt: null, actualCost: null, recommendedTimeWindow: decision.recommendedTimeWindow || "",
+    failureMode: "", rootCause: "", correctiveAction: "", preventiveAction: "",
+  };
+  return { workOrders: [wo, ...d.workOrders], woCounter, workOrderId: wo.id, duplicatePrevented: false, woNumber };
+}
+
+function technicianPerformance(techName, data) {
+  const jobs = data.workOrders.filter((w) => w.assignedTech === techName && w.status === "Completed" && w.startedAt && w.completedAt);
+  const hours = jobs.map((w) => (new Date(w.completedAt) - new Date(w.startedAt)) / 3600000);
+  return { completedJobs: jobs.length, avgHours: hours.length ? hours.reduce((a, b) => a + b, 0) / hours.length : 0 };
+}
+
+function machineReliabilityStats(machineId, data) {
+  const alertDates = data.alerts.filter((a) => a.machineId === machineId).map((a) => new Date(a.date).getTime()).sort((a, b) => a - b);
+  let mtbf = null;
+  if (alertDates.length > 1) {
+    const gaps = []; for (let i = 1; i < alertDates.length; i++) gaps.push((alertDates[i] - alertDates[i - 1]) / 86400000);
+    mtbf = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  }
+  const repairs = data.workOrders.filter((w) => w.machineId === machineId && w.status === "Completed" && w.startedAt && w.completedAt);
+  const mttrHours = repairs.length ? repairs.map((w) => (new Date(w.completedAt) - new Date(w.startedAt)) / 3600000).reduce((a, b) => a + b, 0) / repairs.length : null;
+  return { mtbf, mttrHours, sampleSize: alertDates.length };
+}
+
 function emptyData() {
   return {
     machines: [], alerts: [], decisions: [], workOrders: [], parts: [], team: [],
@@ -129,10 +167,10 @@ function seedData() {
   const iso = (daysAgo) => new Date(now - daysAgo * 86400000).toISOString();
   const isoF = (daysAhead) => new Date(now + daysAhead * 86400000).toISOString();
   const machines = [
-    { id: uid("m"), name: "Boiler A", machineId: "BLR-001", location: "Bay 1", manufacturer: "Cleaver-Brooks", installDate: iso(1400), criticality: "Critical", status: "At Risk", intervalDays: 30, lastMaintenance: iso(40), nextMaintenance: isoF(-10) },
-    { id: uid("m"), name: "Conveyor 2", machineId: "CV-002", location: "Bay 2", manufacturer: "Siemens", installDate: iso(600), criticality: "Medium", status: "Running", intervalDays: 21, lastMaintenance: iso(10), nextMaintenance: isoF(11) },
-    { id: uid("m"), name: "Compressor A", machineId: "AC-001", location: "Utility Room", manufacturer: "Atlas Copco", installDate: iso(300), criticality: "High", status: "Offline", intervalDays: 45, lastMaintenance: iso(50), nextMaintenance: isoF(-5) },
-    { id: uid("m"), name: "Pump B", machineId: "PMP-004", location: "Bay 3", manufacturer: "Grundfos", installDate: iso(900), criticality: "Medium", status: "Running", intervalDays: 60, lastMaintenance: iso(5), nextMaintenance: isoF(55) },
+    { id: uid("m"), name: "Boiler A", machineId: "BLR-001", location: "Bay 1", manufacturer: "Cleaver-Brooks", serialNumber: "SN-70211", assetType: "Boiler", installDate: iso(1400), criticality: "Critical", status: "At Risk", intervalDays: 30, lastMaintenance: iso(40), nextMaintenance: isoF(-10) },
+    { id: uid("m"), name: "Conveyor 2", machineId: "CV-002", location: "Bay 2", manufacturer: "Siemens", serialNumber: "SN-44120", assetType: "Conveyor", installDate: iso(600), criticality: "Medium", status: "Running", intervalDays: 21, lastMaintenance: iso(10), nextMaintenance: isoF(11) },
+    { id: uid("m"), name: "Compressor A", machineId: "AC-001", location: "Utility Room", manufacturer: "Atlas Copco", serialNumber: "SN-91847", assetType: "Compressor", installDate: iso(300), criticality: "High", status: "Offline", intervalDays: 45, lastMaintenance: iso(50), nextMaintenance: isoF(-5) },
+    { id: uid("m"), name: "Pump B", machineId: "PMP-004", location: "Bay 3", manufacturer: "Grundfos", serialNumber: "SN-33902", assetType: "Pump", installDate: iso(900), criticality: "Medium", status: "Running", intervalDays: 60, lastMaintenance: iso(5), nextMaintenance: isoF(55) },
   ];
   const alerts = [
     { id: uid("al"), machineId: machines[0].id, type: "Overheating", severity: "Critical", date: iso(0.1), description: "Temperature rising rapidly, 18% above normal operating range.", photoNote: "", sensorNote: "Temp sensor: 94°C, rising ~2°C/hr", reporter: "J. Alvarez", resolved: false },
@@ -140,22 +178,22 @@ function seedData() {
     { id: uid("al"), machineId: machines[1].id, type: "Vibration", severity: "Medium", date: iso(2), description: "Slightly elevated vibration on drive motor.", photoNote: "", sensorNote: "", reporter: "R. Novak", resolved: false },
   ];
   const decisions = [
-    { id: uid("d"), machineId: machines[0].id, risk: "Critical", businessPriority: "Critical", downtimeCost: 15000, action: "Replace cooling pump today", reason: "Temperature rising rapidly with no sign of plateau; cooling pump output has degraded 30% over the last 2 weeks.", confidence: 92, predictedRUL: "1-2 days", requiredParts: "Cooling pump (BLR series)", recommendedTimeWindow: "Today", suggestedTechnician: "R. Novak", technicianReason: "skill tags match this equipment, currently free", status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null },
-    { id: uid("d"), machineId: machines[2].id, risk: "High", businessPriority: "High", downtimeCost: 8200, action: "Inspect and reset compressor trip circuit", reason: "Two unexplained breaker trips this shift; recurring trip faults historically precede full compressor failure.", confidence: 81, predictedRUL: "3-5 days", requiredParts: "Compressor trip relay", recommendedTimeWindow: "Within 24 hours", suggestedTechnician: "R. Novak", technicianReason: "currently free", status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null },
-    { id: uid("d"), machineId: machines[1].id, risk: "Medium", businessPriority: "Medium", downtimeCost: 1500, action: "Schedule bearing inspection within 3 days", reason: "Vibration trending upward but still within tolerable range.", confidence: 68, predictedRUL: null, requiredParts: "Drive motor bearing kit", recommendedTimeWindow: "Within 3 days", suggestedTechnician: "R. Novak", technicianReason: "currently free", status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null },
+    { id: uid("d"), machineId: machines[0].id, risk: "Critical", businessPriority: "Critical", downtimeCost: 15000, action: "Replace cooling pump today", reason: "Temperature rising rapidly with no sign of plateau; cooling pump output has degraded 30% over the last 2 weeks.", confidence: 92, predictedRUL: "1-2 days", requiredParts: "Cooling pump (BLR series)", recommendedTimeWindow: "Today", rootCauseProbability: "Likely cooling pump impeller wear given the steady output decline over 2 weeks.", safetyChecklist: ["Lock out/tag out boiler before opening panel", "Confirm system fully depressurized", "Wear heat-resistant gloves near recently active components"], approvalRequired: true, suggestedTechnician: "R. Novak", technicianReason: "skill tags match this equipment, currently free", status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null },
+    { id: uid("d"), machineId: machines[2].id, risk: "High", businessPriority: "High", downtimeCost: 8200, action: "Inspect and reset compressor trip circuit", reason: "Two unexplained breaker trips this shift; recurring trip faults historically precede full compressor failure.", confidence: 81, predictedRUL: "3-5 days", requiredParts: "Compressor trip relay", recommendedTimeWindow: "Within 24 hours", rootCauseProbability: "Possible failing trip relay given repeated trips with no clear electrical fault.", safetyChecklist: ["De-energize before inspecting trip circuit", "Verify zero voltage with meter before touching relay"], approvalRequired: true, suggestedTechnician: "R. Novak", technicianReason: "currently free", status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null },
+    { id: uid("d"), machineId: machines[1].id, risk: "Medium", businessPriority: "Medium", downtimeCost: 1500, action: "Schedule bearing inspection within 3 days", reason: "Vibration trending upward but still within tolerable range.", confidence: 68, predictedRUL: null, requiredParts: "Drive motor bearing kit", recommendedTimeWindow: "Within 3 days", rootCauseProbability: null, safetyChecklist: ["Ensure conveyor is stopped and locked out before inspection"], approvalRequired: false, suggestedTechnician: "R. Novak", technicianReason: "currently free", status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null },
   ];
   const workOrders = [
-    { id: uid("wo"), woNumber: "WO-0001", machineId: machines[3].id, assignedTech: "R. Novak", priority: "Low", dueDate: iso(-8), requiredParts: "Seal kit", estimatedHours: 2.5, status: "Completed", decisionId: null, technicianNotes: "Routine seal replacement, no issues found.", startedAt: iso(6.3), completedAt: iso(6), actualCost: 340 },
+    { id: uid("wo"), woNumber: "WO-0001", machineId: machines[3].id, assignedTech: "R. Novak", priority: "Low", dueDate: iso(-8), requiredParts: "Seal kit", estimatedHours: 2.5, status: "Completed", decisionId: null, technicianNotes: "Routine seal replacement, no issues found.", startedAt: iso(6.3), completedAt: iso(6), actualCost: 340, failureMode: "Seal wear", rootCause: "Normal wear at expected service interval", correctiveAction: "Replaced base plate seal kit", preventiveAction: "No change needed — within expected lifespan" },
   ];
   const parts = [
-    { id: uid("p"), name: "Cooling pump (BLR series)", quantity: 1, minStock: 2, machineId: machines[0].id, supplier: "Cleaver-Brooks OEM" },
-    { id: uid("p"), name: "Compressor trip relay", quantity: 0, minStock: 2, machineId: machines[2].id, supplier: "Atlas Copco Parts" },
-    { id: uid("p"), name: "Drive motor bearing kit", quantity: 4, minStock: 2, machineId: machines[1].id, supplier: "Siemens Parts" },
+    { id: uid("p"), name: "Cooling pump (BLR series)", quantity: 1, minStock: 2, machineId: machines[0].id, supplier: "Cleaver-Brooks OEM", leadTimeDays: 5, alternativePartName: "" },
+    { id: uid("p"), name: "Compressor trip relay", quantity: 0, minStock: 2, machineId: machines[2].id, supplier: "Atlas Copco Parts", leadTimeDays: 3, alternativePartName: "Generic 24V trip relay (Supplier X)" },
+    { id: uid("p"), name: "Drive motor bearing kit", quantity: 4, minStock: 2, machineId: machines[1].id, supplier: "Siemens Parts", leadTimeDays: 7, alternativePartName: "" },
   ];
   const team = [
-    { id: uid("u"), name: "J. Alvarez", role: "Manager", skills: "", shift: "" },
-    { id: uid("u"), name: "R. Novak", role: "Technician", skills: "boiler, compressor, conveyor, pump", shift: "Day" },
-    { id: uid("u"), name: "M. Chen", role: "Planner", skills: "", shift: "" },
+    { id: uid("u"), name: "J. Alvarez", role: "Manager", skills: "", shift: "", certifications: "", experienceYears: "" },
+    { id: uid("u"), name: "R. Novak", role: "Technician", skills: "boiler, compressor, conveyor, pump", shift: "Day", certifications: "OSHA 30, Boiler Operator License", experienceYears: "6" },
+    { id: uid("u"), name: "M. Chen", role: "Supervisor", skills: "", shift: "", certifications: "", experienceYears: "" },
   ];
   const activity = [
     { id: uid("a"), text: "Critical alert: Overheating on Boiler A", at: iso(0.1) },
@@ -439,24 +477,24 @@ function DashboardHeroDecision({ decision, machine, data, session, setData, logA
   const techReady = matches.length > 0;
   const neededParts = (decision.requiredParts || "").split(",").map((s) => s.trim()).filter(Boolean);
   const partsReady = neededParts.length === 0 || neededParts.every((pn) => data.parts.some((p) => p.machineId === decision.machineId && p.name.toLowerCase().includes(pn.toLowerCase()) && p.quantity > 0));
+  const altPart = !partsReady ? data.parts.find((p) => p.machineId === decision.machineId && p.alternativePartName) : null;
 
   function confirmDecide(reasonText, chosenTechnician) {
     const action = decideModal.action;
+    let dupInfo = null;
     setData((d) => {
       let workOrders = d.workOrders;
       let woCounter = d.woCounter || 0;
       let workOrderId = null;
       if (action === "Approved") {
-        woCounter += 1;
-        const woNumber = "WO-" + String(woCounter).padStart(4, "0");
-        const wo = { id: uid("wo"), woNumber, machineId: decision.machineId, assignedTech: chosenTechnician || decision.suggestedTechnician || "Unassigned", priority: decision.risk, dueDate: new Date().toISOString(), requiredParts: decision.requiredParts || "", estimatedHours: null, status: chosenTechnician || decision.suggestedTechnician ? "Assigned" : "Pending", decisionId: decision.id, technicianNotes: "", startedAt: null, completedAt: null, actualCost: null, recommendedTimeWindow: decision.recommendedTimeWindow || "" };
-        workOrders = [wo, ...workOrders];
-        workOrderId = wo.id;
+        const result = createWorkOrderForDecision(d, decision, chosenTechnician);
+        workOrders = result.workOrders; woCounter = result.woCounter; workOrderId = result.workOrderId;
+        if (result.duplicatePrevented) dupInfo = result.woNumber;
       }
       const decisions = d.decisions.map((dec) => dec.id === decision.id ? { ...dec, status: action, decisionReason: reasonText, decidedBy: session.name, decidedAt: new Date().toISOString(), workOrderId } : dec);
       return { ...d, decisions, workOrders, woCounter };
     });
-    logActivity(`${session.name} ${action.toLowerCase()} recommendation for ${machine?.name}: ${decision.action}`);
+    logActivity(dupInfo ? `${session.name} approved ${decision.action} for ${machine?.name} — linked to existing ${dupInfo} instead of creating a duplicate` : `${session.name} ${action.toLowerCase()} recommendation for ${machine?.name}: ${decision.action}`);
     setDecideModal(null);
   }
 
@@ -475,9 +513,9 @@ function DashboardHeroDecision({ decision, machine, data, session, setData, logA
       <div style={{ marginBottom: 16 }}><div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Recommended action</div><div style={{ fontSize: 15, fontWeight: 600 }}>{decision.action}</div></div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 18, background: "#12161A", borderRadius: 8, padding: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>{techReady ? <CheckCircle2 size={13} color="#34D399" /> : <AlertTriangle size={13} color="#F5A623" />}{techReady ? `Technician available${matches[0] ? ` — ${matches[0].name}` : ""}` : "No technician available"}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>{partsReady ? <CheckCircle2 size={13} color="#34D399" /> : <AlertTriangle size={13} color="#E5484D" />}{neededParts.length === 0 ? "No specific parts required" : partsReady ? `Spare part in stock: ${neededParts.join(", ")}` : `Spare part missing: ${neededParts.join(", ")}`}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>{partsReady ? <CheckCircle2 size={13} color="#34D399" /> : <AlertTriangle size={13} color="#E5484D" />}{neededParts.length === 0 ? "No specific parts required" : partsReady ? `Spare part in stock: ${neededParts.join(", ")}` : `Spare part missing: ${neededParts.join(", ")}${altPart ? ` — alternative available: ${altPart.alternativePartName}` : ""}`}</div>
       </div>
-      <RoleGate role={session.role} allow={["Manager", "Administrator"]}>
+      <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Button variant="success" onClick={() => setDecideModal({ action: "Approved" })}><CheckCheck size={14} /> Approve Work Order</Button>
           <Button variant="ghost" onClick={() => setDecideModal({ action: "Delayed" })}><PauseCircle size={14} /> Delay</Button>
@@ -581,7 +619,7 @@ function Dashboard({ data, session, setTab, setData, logActivity }) {
 function Assets({ data, setData, session, logActivity }) {
   const [modal, setModal] = useState(null);
   const [selected, setSelected] = useState(null);
-  const canEdit = session.role === "Manager" || session.role === "Administrator";
+  const canEdit = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
 
   function save(machine) {
     setData((d) => {
@@ -598,22 +636,27 @@ function Assets({ data, setData, session, logActivity }) {
     if (!m) { setSelected(null); return null; }
     const machineAlerts = data.alerts.filter((a) => a.machineId === m.id).sort((a, b) => new Date(b.date) - new Date(a.date));
     const machineWOs = data.workOrders.filter((w) => w.machineId === m.id).sort((a, b) => new Date(b.dueDate) - new Date(a.dueDate));
+    const reliability = machineReliabilityStats(m.id, data);
     return (
       <div>
         <button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: "#8A96A3", fontSize: 12.5, cursor: "pointer", marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>← Back to assets</button>
-        <PageHeader title={m.name} subtitle={m.machineId} action={<RoleGate role={session.role} allow={["Manager", "Administrator"]}><Button variant="ghost" onClick={() => setModal(m)}>Edit machine</Button></RoleGate>} />
+        <PageHeader title={m.name} subtitle={m.machineId} action={<RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}><Button variant="ghost" onClick={() => setModal(m)}>Edit machine</Button></RoleGate>} />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
           <Card style={{ padding: 20 }}>
             <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Details</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
               <Row label="Status"><Badge color={STATUS_COLOR[m.status]}><Dot color={STATUS_COLOR[m.status]} />{m.status}</Badge></Row>
               <Row label="Criticality"><Badge color={RISK_COLOR[m.criticality] || "#8A96A3"}>{m.criticality}</Badge></Row>
+              {m.assetType && <Row label="Asset type">{m.assetType}</Row>}
+              {m.serialNumber && <Row label="Serial number">{m.serialNumber}</Row>}
               <Row label="Location">{m.location}</Row>
               <Row label="Manufacturer">{m.manufacturer}</Row>
               <Row label="Installed">{fmtDate(m.installDate)}</Row>
               <Row label="Maintenance interval">Every {m.intervalDays} days</Row>
               <Row label="Last maintenance">{fmtDate(m.lastMaintenance)}</Row>
               <Row label="Next maintenance">{fmtDate(m.nextMaintenance)}{daysUntil(m.nextMaintenance) < 0 && <span style={{ color: "#E5484D", marginLeft: 8, fontSize: 11.5 }}>overdue</span>}</Row>
+              <Row label="MTBF">{reliability.mtbf != null ? `${reliability.mtbf.toFixed(0)} days` : "Not enough alert history yet"}</Row>
+              <Row label="MTTR">{reliability.mttrHours != null ? `${reliability.mttrHours.toFixed(1)} hours` : "Not enough repair history yet"}</Row>
             </div>
           </Card>
           <Card style={{ padding: 20 }}>
@@ -628,8 +671,13 @@ function Assets({ data, setData, session, logActivity }) {
         <Card style={{ padding: 20 }}>
           <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Work order history</div>
           {machineWOs.length === 0 ? <div style={{ fontSize: 12.5, color: "#5B6672" }}>No work orders yet.</div> : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {machineWOs.map((w) => <div key={w.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderBottom: "1px solid #2B333B" }}><span>{w.woNumber} · {w.assignedTech}</span><Badge color={WO_STATUS_COLOR[w.status]}>{w.status}</Badge></div>)}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {machineWOs.map((w) => (
+                <div key={w.id} style={{ padding: "8px 0", borderBottom: "1px solid #2B333B" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}><span>{w.woNumber} · {w.assignedTech}</span><Badge color={WO_STATUS_COLOR[w.status]}>{w.status}</Badge></div>
+                  {w.rootCause && <div style={{ fontSize: 11.5, color: "#8A96A3", marginTop: 3 }}>Root cause: {w.rootCause}{w.correctiveAction ? ` · Fix: ${w.correctiveAction}` : ""}</div>}
+                </div>
+              ))}
             </div>
           )}
         </Card>
@@ -640,14 +688,14 @@ function Assets({ data, setData, session, logActivity }) {
 
   return (
     <div>
-      <PageHeader title="Assets" subtitle="Every machine your team is responsible for." action={<RoleGate role={session.role} allow={["Manager", "Administrator"]}><Button onClick={() => setModal({})}><Plus size={15} /> Register machine</Button></RoleGate>} />
+      <PageHeader title="Assets" subtitle="Every machine your team is responsible for." action={<RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}><Button onClick={() => setModal({})}><Plus size={15} /> Register machine</Button></RoleGate>} />
       {data.machines.length === 0 ? (
         <Card style={{ padding: 32, textAlign: "center" }}>
           <Factory size={28} style={{ opacity: 0.4, marginBottom: 10 }} />
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>No machines registered yet</div>
           <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 18, maxWidth: 380, marginLeft: "auto", marginRight: "auto" }}>Register your real machines — the Decision Center only ever reasons about what's actually here, nothing invented.</div>
           <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-            <RoleGate role={session.role} allow={["Manager", "Administrator"]}>
+            <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
               <Button onClick={() => setModal({})}><Plus size={15} /> Register your first machine</Button>
               <Button variant="ghost" onClick={() => { const s = seedData(); setData((d) => ({ ...d, ...s })); logActivity("Loaded sample data for demo purposes"); }}>Load sample data instead</Button>
             </RoleGate>
@@ -689,7 +737,7 @@ function Row({ label, children }) {
 function MachineModal({ machine, machines = [], onClose, onSave }) {
   const [form, setForm] = useState({
     id: machine.id || uid("m"), name: machine.name || "", machineId: machine.machineId || "",
-    location: machine.location || "", manufacturer: machine.manufacturer || "",
+    location: machine.location || "", manufacturer: machine.manufacturer || "", serialNumber: machine.serialNumber || "", assetType: machine.assetType || "",
     installDate: machine.installDate ? machine.installDate.slice(0, 10) : "", intervalDays: machine.intervalDays || 30,
     status: machine.status || "Running", criticality: machine.criticality || "Medium",
     lastMaintenance: machine.lastMaintenance ? machine.lastMaintenance.slice(0, 10) : "",
@@ -712,6 +760,10 @@ function MachineModal({ machine, machines = [], onClose, onSave }) {
           {touched.machineId && idError && <div style={{ color: "#E5484D", fontSize: 11.5, marginTop: 4 }}>{idError}</div>}
           {!idError && form.machineId && touched.machineId && <div style={{ color: "#34D399", fontSize: 11.5, marginTop: 4 }}>Looks like a valid machine ID.</div>}
         </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Serial number (optional)"><input style={inputStyle} value={form.serialNumber} onChange={set("serialNumber")} placeholder="SN-88231" /></Field>
+          <Field label="Asset type (optional)"><input style={inputStyle} value={form.assetType} onChange={set("assetType")} placeholder="Boiler" /></Field>
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <Field label="Location"><input style={inputStyle} value={form.location} onChange={set("location")} placeholder="Bay 1" /></Field>
           <Field label="Manufacturer"><input style={inputStyle} value={form.manufacturer} onChange={set("manufacturer")} placeholder="Cleaver-Brooks" /></Field>
@@ -838,7 +890,7 @@ DATA (the complete, real set of machines — do not reference anything outside t
 ${JSON.stringify({ machines }, null, 2)}
 
 Respond with ONLY a raw JSON array (no markdown fences, no prose) of 3-8 objects, one per machine that genuinely needs attention (skip machines with no real signal), in this exact shape:
-[{"machineId": "<the machine's machineId field, exactly as given>", "risk": "<Low, Medium, High, or Critical>", "businessPriority": "<Low, Medium, High, or Critical — how urgent this is for the business, may differ slightly from risk if criticality/status matters more>", "downtimeCost": <integer USD estimate of cost if this is ignored, based on criticality and status — reasonable order-of-magnitude, not precise>, "action": "<short imperative action, e.g. 'Replace cooling pump today'>", "reason": "<1-2 sentences citing the specific real evidence — trend, sensor note, days overdue, etc>", "confidence": <integer 0-100, lower when history is sparse>, "predictedRUL": "<short phrase estimating remaining useful life before failure if the data supports it, e.g. '2-3 days', or null if there isn't enough history to estimate>", "requiredParts": "<comma-separated part name(s) from this machine's knownSpareParts if relevant, else empty string>", "recommendedTimeWindow": "<short phrase, e.g. 'Today', 'Within 24 hours', 'Within 3 days', based on urgency>"}]
+[{"machineId": "<the machine's machineId field, exactly as given>", "risk": "<Low, Medium, High, or Critical>", "businessPriority": "<Low, Medium, High, or Critical — how urgent this is for the business, may differ slightly from risk if criticality/status matters more>", "downtimeCost": <integer USD estimate of cost if this is ignored, based on criticality and status — reasonable order-of-magnitude, not precise>, "action": "<short imperative action, e.g. 'Replace cooling pump today'>", "reason": "<1-2 sentences citing the specific real evidence — trend, sensor note, days overdue, etc>", "confidence": <integer 0-100, lower when history is sparse>, "predictedRUL": "<short phrase estimating remaining useful life before failure if the data supports it, e.g. '2-3 days', or null if there isn't enough history to estimate>", "requiredParts": "<comma-separated part name(s) from this machine's knownSpareParts if relevant, else empty string>", "recommendedTimeWindow": "<short phrase, e.g. 'Today', 'Within 24 hours', 'Within 3 days', based on urgency>", "rootCauseProbability": "<short phrase naming the most likely root cause based on the evidence given, e.g. 'Likely bearing wear given rising vibration trend', or null if there isn't enough evidence to suggest one>", "safetyChecklist": ["<short safety check items relevant to this specific action, e.g. 'Lock out/tag out before opening panel', 2-4 items, grounded in the actual action and machine type — not generic filler>"], "approvalRequired": <true unless risk is Low and downtimeCost is small, in which case this can be false for routine low-stakes items>}]
 
 Order by descending urgency (Critical/High risk and highest downtimeCost first).`;
 }
@@ -847,7 +899,7 @@ function DecisionCenter({ data, setData, session, logActivity }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [decideModal, setDecideModal] = useState(null); // { decision, action: 'Approved'|'Delayed'|'Rejected' }
-  const canDecide = session.role === "Manager" || session.role === "Administrator";
+  const canDecide = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
 
   async function generate() {
     setRunning(true); setError("");
@@ -867,6 +919,8 @@ function DecisionCenter({ data, setData, session, logActivity }) {
           id: uid("d"), machineId: m.id, risk: r.risk, businessPriority: r.businessPriority || r.risk,
           downtimeCost: r.downtimeCost, action: r.action, reason: r.reason, confidence: r.confidence,
           predictedRUL: r.predictedRUL || null, requiredParts: r.requiredParts || "", recommendedTimeWindow: r.recommendedTimeWindow || "",
+          rootCauseProbability: r.rootCauseProbability || null, safetyChecklist: Array.isArray(r.safetyChecklist) ? r.safetyChecklist : [],
+          approvalRequired: r.approvalRequired !== false,
           suggestedTechnician: matches[0]?.name || null, technicianReason: matches[0]?.reason || "",
           status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null,
         };
@@ -874,7 +928,7 @@ function DecisionCenter({ data, setData, session, logActivity }) {
       setData((d) => ({ ...d, aiRun: { generatedAt: new Date().toISOString() }, decisions: [...newDecisions, ...d.decisions.filter((old) => old.status !== "Pending")] }));
       logActivity(`Decision Center generated ${newDecisions.length} recommendations`);
     } catch (e) {
-      setError("Couldn't generate recommendations right now. Try again in a moment.");
+      setError(`Couldn't generate recommendations: ${e.message || "unknown error"}. If this mentions ANTHROPIC_API_KEY, it means the key isn't set in Vercel yet — see Settings help or check Vercel → Environment Variables.`);
     } finally { setRunning(false); }
   }
 
@@ -882,27 +936,21 @@ function DecisionCenter({ data, setData, session, logActivity }) {
 
   function confirmDecide(reasonText, chosenTechnician) {
     const { decision, action } = decideModal;
+    let dupInfo = null;
     setData((d) => {
       let workOrders = d.workOrders;
       let woCounter = d.woCounter || 0;
       let workOrderId = null;
       if (action === "Approved") {
-        woCounter += 1;
-        const woNumber = "WO-" + String(woCounter).padStart(4, "0");
-        const wo = {
-          id: uid("wo"), woNumber, machineId: decision.machineId, assignedTech: chosenTechnician || decision.suggestedTechnician || "Unassigned",
-          priority: decision.risk, dueDate: new Date().toISOString(), requiredParts: decision.requiredParts || "", estimatedHours: null,
-          status: chosenTechnician || decision.suggestedTechnician ? "Assigned" : "Pending", decisionId: decision.id, technicianNotes: "", startedAt: null, completedAt: null, actualCost: null,
-          recommendedTimeWindow: decision.recommendedTimeWindow || "",
-        };
-        workOrders = [wo, ...workOrders];
-        workOrderId = wo.id;
+        const result = createWorkOrderForDecision(d, decision, chosenTechnician);
+        workOrders = result.workOrders; woCounter = result.woCounter; workOrderId = result.workOrderId;
+        if (result.duplicatePrevented) dupInfo = result.woNumber;
       }
       const decisions = d.decisions.map((dec) => dec.id === decision.id ? { ...dec, status: action, decisionReason: reasonText, decidedBy: session.name, decidedAt: new Date().toISOString(), workOrderId } : dec);
       return { ...d, decisions, workOrders, woCounter };
     });
     const m = data.machines.find((m) => m.id === decision.machineId);
-    logActivity(`${session.name} ${action.toLowerCase()} recommendation for ${m?.name}: ${decision.action}`);
+    logActivity(dupInfo ? `${session.name} approved ${decision.action} for ${m?.name} — linked to existing ${dupInfo} instead of creating a duplicate` : `${session.name} ${action.toLowerCase()} recommendation for ${m?.name}: ${decision.action}`);
     setDecideModal(null);
   }
 
@@ -929,6 +977,7 @@ function DecisionCenter({ data, setData, session, logActivity }) {
             const techReady = matches.length > 0;
             const neededParts = (d.requiredParts || "").split(",").map((s) => s.trim()).filter(Boolean);
             const partsReady = neededParts.length === 0 || neededParts.every((pn) => data.parts.some((p) => p.machineId === d.machineId && p.name.toLowerCase().includes(pn.toLowerCase()) && p.quantity > 0));
+            const altPart = !partsReady ? data.parts.find((p) => p.machineId === d.machineId && p.alternativePartName) : null;
             return (
               <Card key={d.id} style={{ padding: 22, borderLeft: `4px solid ${color}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
@@ -936,7 +985,7 @@ function DecisionCenter({ data, setData, session, logActivity }) {
                     <div style={{ fontSize: 11, color: "#5B6672", fontFamily: F_MONO, marginBottom: 4 }}>PRIORITY {idx + 1} OF {pending.length}</div>
                     <div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 18 }}>{m?.name || "Unknown machine"}</div>
                   </div>
-                  <div style={{ display: "flex", gap: 6 }}><Badge color={color}>{d.risk} risk</Badge>{d.businessPriority && d.businessPriority !== d.risk && <Badge color={RISK_COLOR[d.businessPriority] || "#8A96A3"}>{d.businessPriority} priority</Badge>}</div>
+                  <div style={{ display: "flex", gap: 6 }}><Badge color={color}>{d.risk} risk</Badge>{d.businessPriority && d.businessPriority !== d.risk && <Badge color={RISK_COLOR[d.businessPriority] || "#8A96A3"}>{d.businessPriority} priority</Badge>}{d.approvalRequired === false && <Badge color="#8A96A3">Routine — approval optional</Badge>}</div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 24px", marginBottom: 14 }}>
                   <div><div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>Estimated downtime cost</div><div style={{ fontFamily: F_MONO, fontSize: 17, fontWeight: 600, color: "#E5484D" }}>{fmtMoney(d.downtimeCost)}</div></div>
@@ -957,12 +1006,26 @@ function DecisionCenter({ data, setData, session, logActivity }) {
                   <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 }}>Reason</div>
                   <div style={{ fontSize: 13, color: "#C7CED5" }}>{d.reason}</div>
                 </div>
+                {d.rootCauseProbability && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 }}>Likely root cause</div>
+                    <div style={{ fontSize: 13, color: "#C7CED5" }}>{d.rootCauseProbability}</div>
+                  </div>
+                )}
+                {d.safetyChecklist && d.safetyChecklist.length > 0 && (
+                  <div style={{ marginBottom: 16, background: "#F5A6230D", border: "1px solid #F5A62330", borderRadius: 8, padding: 12 }}>
+                    <div style={{ fontSize: 10.5, color: "#F5A623", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6, fontWeight: 700 }}>Safety checklist</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {d.safetyChecklist.map((item, i) => <div key={i} style={{ fontSize: 12.5, color: "#C7CED5", display: "flex", gap: 6 }}><span>⚠</span>{item}</div>)}
+                    </div>
+                  </div>
+                )}
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 18, background: "#12161A", borderRadius: 8, padding: 12 }}>
                   <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 2 }}>Ready to execute?</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>{techReady ? <CheckCircle2 size={13} color="#34D399" /> : <AlertTriangle size={13} color="#F5A623" />}{techReady ? `Technician available${matches[0] ? ` — ${matches[0].name} suggested` : ""}` : "No technician available in team roster"}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>{partsReady ? <CheckCircle2 size={13} color="#34D399" /> : <AlertTriangle size={13} color="#E5484D" />}{neededParts.length === 0 ? "No specific parts required" : partsReady ? `Spare part in stock: ${neededParts.join(", ")}` : `Spare part missing: ${neededParts.join(", ")}`}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>{partsReady ? <CheckCircle2 size={13} color="#34D399" /> : <AlertTriangle size={13} color="#E5484D" />}{neededParts.length === 0 ? "No specific parts required" : partsReady ? `Spare part in stock: ${neededParts.join(", ")}` : `Spare part missing: ${neededParts.join(", ")}${altPart ? ` — alternative available: ${altPart.alternativePartName}` : ""}`}</div>
                 </div>
-                <RoleGate role={session.role} allow={["Manager", "Administrator"]}>
+                <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
                   <div style={{ display: "flex", gap: 10 }}>
                     <Button variant="success" onClick={() => openDecide(d, "Approved")}><CheckCheck size={14} /> Approve</Button>
                     <Button variant="ghost" onClick={() => openDecide(d, "Delayed")}><PauseCircle size={14} /> Delay</Button>
@@ -1038,7 +1101,7 @@ function DecideModal({ decision, action, machine, data, onClose, onConfirm }) {
 
 function WorkOrders({ data, setData, session, logActivity }) {
   const [modal, setModal] = useState(null);
-  const canManage = session.role === "Manager" || session.role === "Administrator";
+  const canManage = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
 
   function update(wo, patch) {
     setData((d) => ({ ...d, workOrders: d.workOrders.map((w) => w.id === wo.id ? { ...w, ...patch } : w) }));
@@ -1069,7 +1132,7 @@ function WorkOrders({ data, setData, session, logActivity }) {
                     <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 4 }}>{m?.name || "Unknown machine"}</div>
                     <div style={{ fontSize: 11.5, color: "#8A96A3" }}>Assigned: {w.assignedTech} · Due {fmtDate(w.dueDate)} {w.requiredParts && `· Parts: ${w.requiredParts}`} {w.estimatedHours && `· Est. ${w.estimatedHours}h`}</div>
                   </div>
-                  <RoleGate role={session.role} allow={["Manager", "Administrator"]}>
+                  <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
                     <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap" }}>
                       <button onClick={() => setModal(w)} style={{ fontSize: 11.5, padding: "6px 10px", borderRadius: 5, background: "#12161A", border: "1px solid #2B333B", color: "#8A96A3", cursor: "pointer" }}>Assign / edit</button>
                       <select value={w.status} onChange={(e) => update(w, { status: e.target.value })} style={{ ...inputStyle, padding: "6px 8px", fontSize: 11.5 }}>
@@ -1116,8 +1179,8 @@ function TechnicianWorkspace({ data, setData, session, logActivity }) {
   const jobs = data.workOrders.filter((w) => w.status !== "Completed" && w.status !== "Closed" && (techFilter === "All" || w.assignedTech === techFilter)).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
 
   function startWork(wo) { setData((d) => ({ ...d, workOrders: d.workOrders.map((w) => w.id === wo.id ? { ...w, status: "In Progress", startedAt: new Date().toISOString() } : w) })); logActivity(`${wo.woNumber} started`); }
-  function completeWork(wo, notes, cost) {
-    setData((d) => ({ ...d, workOrders: d.workOrders.map((w) => w.id === wo.id ? { ...w, status: "Completed", completedAt: new Date().toISOString(), technicianNotes: notes, actualCost: cost } : w) }));
+  function completeWork(wo, fields) {
+    setData((d) => ({ ...d, workOrders: d.workOrders.map((w) => w.id === wo.id ? { ...w, status: "Completed", completedAt: new Date().toISOString(), ...fields } : w) }));
     logActivity(`${wo.woNumber} completed`);
   }
 
@@ -1156,7 +1219,7 @@ function TechnicianWorkspace({ data, setData, session, logActivity }) {
           })}
         </div>
       )}
-      {completeModal && <CompleteWorkModal wo={completeModal} onClose={() => setCompleteModal(null)} onSave={(notes, cost) => { completeWork(completeModal, notes, cost); setCompleteModal(null); }} />}
+      {completeModal && <CompleteWorkModal wo={completeModal} onClose={() => setCompleteModal(null)} onSave={(fields) => { completeWork(completeModal, fields); setCompleteModal(null); }} />}
     </div>
   );
 }
@@ -1164,13 +1227,26 @@ function TechnicianWorkspace({ data, setData, session, logActivity }) {
 function CompleteWorkModal({ wo, onClose, onSave }) {
   const [notes, setNotes] = useState("");
   const [cost, setCost] = useState("");
+  const [failureMode, setFailureMode] = useState("");
+  const [rootCause, setRootCause] = useState("");
+  const [correctiveAction, setCorrectiveAction] = useState("");
+  const [preventiveAction, setPreventiveAction] = useState("");
   return (
     <Modal title={`Complete ${wo.woNumber}`} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="Technician notes"><textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="What was done, what was found…" /></Field>
+        <Field label="Technician notes"><textarea style={{ ...inputStyle, minHeight: 70, resize: "vertical" }} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="What was done, what was found…" /></Field>
+        <div style={{ borderTop: "1px solid #2B333B", paddingTop: 12, marginTop: 2 }}>
+          <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700, marginBottom: 10 }}>Root cause analysis</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <Field label="Failure mode (optional)"><input style={inputStyle} value={failureMode} onChange={(e) => setFailureMode(e.target.value)} placeholder="e.g. Bearing seizure" /></Field>
+            <Field label="Root cause (optional)"><input style={inputStyle} value={rootCause} onChange={(e) => setRootCause(e.target.value)} placeholder="e.g. Lubrication schedule too infrequent" /></Field>
+            <Field label="Corrective action (optional)"><input style={inputStyle} value={correctiveAction} onChange={(e) => setCorrectiveAction(e.target.value)} placeholder="e.g. Replaced bearing and shaft seal" /></Field>
+            <Field label="Preventive action (optional)"><input style={inputStyle} value={preventiveAction} onChange={(e) => setPreventiveAction(e.target.value)} placeholder="e.g. Shortened lubrication interval to 2 weeks" /></Field>
+          </div>
+        </div>
         <Field label="Photo / evidence note (optional)"><input style={inputStyle} placeholder="Describe uploaded evidence (file upload not wired in this prototype)" /></Field>
         <Field label="Actual cost (optional)"><input type="number" style={inputStyle} value={cost} onChange={(e) => setCost(e.target.value)} placeholder="340" /></Field>
-        <Button style={{ justifyContent: "center", marginTop: 6 }} disabled={!notes.trim()} onClick={() => onSave(notes.trim(), cost ? Number(cost) : null)}>Mark Completed</Button>
+        <Button style={{ justifyContent: "center", marginTop: 6 }} disabled={!notes.trim()} onClick={() => onSave({ technicianNotes: notes.trim(), actualCost: cost ? Number(cost) : null, failureMode: failureMode.trim(), rootCause: rootCause.trim(), correctiveAction: correctiveAction.trim(), preventiveAction: preventiveAction.trim() })}>Mark Completed</Button>
       </div>
     </Modal>
   );
@@ -1180,14 +1256,14 @@ function CompleteWorkModal({ wo, onClose, onSave }) {
 
 function Inventory({ data, setData, session, logActivity }) {
   const [modal, setModal] = useState(null);
-  const canEdit = session.role === "Manager" || session.role === "Administrator" || session.role === "Planner";
+  const canEdit = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
   function save(part) {
     setData((d) => { const exists = d.parts.some((p) => p.id === part.id); return { ...d, parts: exists ? d.parts.map((p) => p.id === part.id ? part : p) : [...d.parts, part] }; });
     logActivity(`Inventory updated: ${part.name}`); setModal(null);
   }
   return (
     <div>
-      <PageHeader title="Inventory" subtitle="Spare parts — what you have, what's missing." action={<RoleGate role={session.role} allow={["Manager", "Administrator", "Planner"]}><Button onClick={() => setModal({})}><Plus size={15} /> Add part</Button></RoleGate>} />
+      <PageHeader title="Inventory" subtitle="Spare parts — what you have, what's missing." action={<RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}><Button onClick={() => setModal({})}><Plus size={15} /> Add part</Button></RoleGate>} />
       {data.parts.length === 0 ? <EmptyState icon={Package} text="No parts tracked yet." /> : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 14 }}>
           {data.parts.map((p) => {
@@ -1200,8 +1276,9 @@ function Inventory({ data, setData, session, logActivity }) {
                   {low && <Badge color="#E5484D"><AlertTriangle size={11} /> Spare Part Missing</Badge>}
                 </div>
                 <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 4 }}>Used on: {m?.name || "—"}</div>
-                <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 4 }}>Supplier: {p.supplier}</div>
+                <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 4 }}>Supplier: {p.supplier}{p.leadTimeDays ? ` · ${p.leadTimeDays}d lead time` : ""}</div>
                 <div style={{ fontSize: 13, fontFamily: F_MONO, color: low ? "#E5484D" : "#34D399" }}>{p.quantity} in stock <span style={{ color: "#5B6672" }}>(min {p.minStock})</span></div>
+                {low && p.alternativePartName && <div style={{ fontSize: 11.5, color: "#4C9FE5", marginTop: 6 }}>Alternative available: {p.alternativePartName}</div>}
               </Card>
             );
           })}
@@ -1213,7 +1290,7 @@ function Inventory({ data, setData, session, logActivity }) {
 }
 
 function PartModal({ part, machines, onClose, onSave }) {
-  const [form, setForm] = useState({ id: part.id || uid("p"), name: part.name || "", quantity: part.quantity ?? 0, minStock: part.minStock ?? 1, machineId: part.machineId || machines[0]?.id || "", supplier: part.supplier || "" });
+  const [form, setForm] = useState({ id: part.id || uid("p"), name: part.name || "", quantity: part.quantity ?? 0, minStock: part.minStock ?? 1, machineId: part.machineId || machines[0]?.id || "", supplier: part.supplier || "", leadTimeDays: part.leadTimeDays || "", alternativePartName: part.alternativePartName || "" });
   return (
     <Modal title={part.id ? "Edit part" : "Add part"} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1223,8 +1300,12 @@ function PartModal({ part, machines, onClose, onSave }) {
           <Field label="Quantity in stock"><input type="number" style={inputStyle} value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} /></Field>
           <Field label="Minimum stock"><input type="number" style={inputStyle} value={form.minStock} onChange={(e) => setForm((f) => ({ ...f, minStock: e.target.value }))} /></Field>
         </div>
-        <Field label="Supplier"><input style={inputStyle} value={form.supplier} onChange={(e) => setForm((f) => ({ ...f, supplier: e.target.value }))} placeholder="Atlas Copco Parts" /></Field>
-        <Button style={{ justifyContent: "center", marginTop: 6 }} disabled={!form.name.trim()} onClick={() => onSave({ ...form, quantity: Number(form.quantity) || 0, minStock: Number(form.minStock) || 1 })}>Save part</Button>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Supplier"><input style={inputStyle} value={form.supplier} onChange={(e) => setForm((f) => ({ ...f, supplier: e.target.value }))} placeholder="Atlas Copco Parts" /></Field>
+          <Field label="Lead time (days, optional)"><input type="number" style={inputStyle} value={form.leadTimeDays} onChange={(e) => setForm((f) => ({ ...f, leadTimeDays: e.target.value }))} placeholder="5" /></Field>
+        </div>
+        <Field label="Alternative part (optional)"><input style={inputStyle} value={form.alternativePartName} onChange={(e) => setForm((f) => ({ ...f, alternativePartName: e.target.value }))} placeholder="e.g. Generic equivalent from Supplier X" /></Field>
+        <Button style={{ justifyContent: "center", marginTop: 6 }} disabled={!form.name.trim()} onClick={() => onSave({ ...form, quantity: Number(form.quantity) || 0, minStock: Number(form.minStock) || 1, leadTimeDays: form.leadTimeDays ? Number(form.leadTimeDays) : null })}>Save part</Button>
       </div>
     </Modal>
   );
@@ -1285,6 +1366,12 @@ function Reports({ data }) {
   data.alerts.forEach((a) => { problemCounts[a.machineId] = (problemCounts[a.machineId] || 0) + 1; });
   const problemData = Object.entries(problemCounts).map(([machineId, count]) => ({ name: data.machines.find((m) => m.id === machineId)?.name || "Unknown", count })).sort((a, b) => b.count - a.count).slice(0, 5);
 
+  const techPerf = data.team.filter((t) => t.role === "Technician").map((t) => ({ name: t.name, ...technicianPerformance(t.name, data) })).filter((t) => t.completedJobs > 0).sort((a, b) => b.completedJobs - a.completedJobs);
+
+  const failureModeCounts = {};
+  completedWOs.forEach((w) => { if (w.failureMode) failureModeCounts[w.failureMode] = (failureModeCounts[w.failureMode] || 0) + 1; });
+  const recurringFailures = Object.entries(failureModeCounts).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]).slice(0, 6);
+
   const stats = [
     { label: "Downtime this month", value: `${downtimeThisMonth.toFixed(1)}h`, icon: Clock, color: "#E5484D" },
     { label: "MTTR (avg repair time)", value: mttr != null ? `${mttr.toFixed(1)}h` : "—", icon: Wrench, color: "#4C9FE5" },
@@ -1322,6 +1409,35 @@ function Reports({ data }) {
           </div>
         )}
       </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 14 }}>
+        <Card style={{ padding: 20 }}>
+          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 15, marginBottom: 14 }}>Technician performance</div>
+          {techPerf.length === 0 ? <EmptyState icon={Hammer} text="No completed jobs with timing data yet." /> : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {techPerf.map((t) => (
+                <div key={t.name} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderBottom: "1px solid #2B333B" }}>
+                  <span>{t.name}</span>
+                  <span style={{ color: "#8A96A3" }}>{t.completedJobs} jobs · avg {t.avgHours.toFixed(1)}h</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+        <Card style={{ padding: 20 }}>
+          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 15, marginBottom: 14 }}>Recurring failure modes</div>
+          {recurringFailures.length === 0 ? <EmptyState icon={FileText} text="No root-cause data logged yet — technicians can add it when completing a job." /> : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {recurringFailures.map(([mode, count]) => (
+                <div key={mode} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderBottom: "1px solid #2B333B" }}>
+                  <span>{mode}</span>
+                  <Badge color={count > 1 ? "#F5A623" : "#8A96A3"}>{count}x</Badge>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
@@ -1332,13 +1448,19 @@ function SettingsPage({ data, setData, session, logActivity }) {
   const [companyName, setCompanyName] = useState(data.settings?.companyName || "");
   const [newLocation, setNewLocation] = useState("");
   const [newAssetType, setNewAssetType] = useState("");
-  const [newMember, setNewMember] = useState({ name: "", role: "Technician", skills: "", shift: "Day" });
-  const canEdit = session.role === "Manager" || session.role === "Administrator";
+  const [newMember, setNewMember] = useState({ name: "", role: "Technician", skills: "", shift: "Day", certifications: "", experienceYears: "" });
+  const [confirmReset, setConfirmReset] = useState(false);
+  const canEdit = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
+
+  function resetWorkspace() {
+    setData(() => ({ machines: [], alerts: [], decisions: [], workOrders: [], parts: [], team: [], activity: [], aiRun: null, settings: { companyName: "", locations: [], assetTypes: [] }, woCounter: 0 }));
+    setConfirmReset(false);
+  }
 
   function saveCompany() { setData((d) => ({ ...d, settings: { ...d.settings, companyName } })); logActivity("Updated company name"); }
   function addLocation() { if (!newLocation.trim()) return; setData((d) => ({ ...d, settings: { ...d.settings, locations: [...(d.settings.locations || []), newLocation.trim()] } })); setNewLocation(""); }
   function addAssetType() { if (!newAssetType.trim()) return; setData((d) => ({ ...d, settings: { ...d.settings, assetTypes: [...(d.settings.assetTypes || []), newAssetType.trim()] } })); setNewAssetType(""); }
-  function addMember() { if (!newMember.name.trim()) return; setData((d) => ({ ...d, team: [...d.team, { id: uid("u"), ...newMember }] })); setNewMember({ name: "", role: "Technician", skills: "", shift: "Day" }); logActivity(`Added team member ${newMember.name} (${newMember.role})`); }
+  function addMember() { if (!newMember.name.trim()) return; setData((d) => ({ ...d, team: [...d.team, { id: uid("u"), ...newMember }] })); setNewMember({ name: "", role: "Technician", skills: "", shift: "Day", certifications: "", experienceYears: "" }); logActivity(`Added team member ${newMember.name} (${newMember.role})`); }
   function removeMember(id) { setData((d) => ({ ...d, team: d.team.filter((t) => t.id !== id) })); }
 
   return (
@@ -1355,14 +1477,21 @@ function SettingsPage({ data, setData, session, logActivity }) {
 
         <Card style={{ padding: 20 }}>
           <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Team ({data.team.length})</div>
-          <div style={{ fontSize: 11.5, color: "#8A96A3", marginBottom: 10 }}>Skills and shift are used by the Decision Center to suggest the right technician for each job — add real tags for real matching.</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12, maxHeight: 200, overflowY: "auto" }}>
-            {data.team.map((u) => (
-              <div key={u.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "6px 0", borderBottom: "1px solid #2B333B" }}>
-                <span>{u.name} <span style={{ color: "#8A96A3" }}>· {u.role}{u.shift ? ` · ${u.shift} shift` : ""}{u.skills ? ` · ${u.skills}` : ""}</span></span>
-                {canEdit && <button onClick={() => removeMember(u.id)} style={{ background: "none", border: "none", color: "#E5484D", cursor: "pointer", fontSize: 11.5 }}>Remove</button>}
-              </div>
-            ))}
+          <div style={{ fontSize: 11.5, color: "#8A96A3", marginBottom: 10 }}>Skills, certifications, and shift are used by the Decision Center to suggest the right technician for each job. Performance is computed automatically from completed work orders — nothing to fill in.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12, maxHeight: 220, overflowY: "auto" }}>
+            {data.team.map((u) => {
+              const perf = u.role === "Technician" ? technicianPerformance(u.name, data) : null;
+              return (
+                <div key={u.id} style={{ fontSize: 12.5, padding: "8px 0", borderBottom: "1px solid #2B333B" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>{u.name} <span style={{ color: "#8A96A3" }}>· {u.role}{u.shift ? ` · ${u.shift} shift` : ""}{u.experienceYears ? ` · ${u.experienceYears}y exp` : ""}</span></span>
+                    {canEdit && <button onClick={() => removeMember(u.id)} style={{ background: "none", border: "none", color: "#E5484D", cursor: "pointer", fontSize: 11.5 }}>Remove</button>}
+                  </div>
+                  {(u.skills || u.certifications) && <div style={{ fontSize: 11, color: "#5B6672", marginTop: 2 }}>{u.skills && `Skills: ${u.skills}`}{u.skills && u.certifications ? " · " : ""}{u.certifications && `Certs: ${u.certifications}`}</div>}
+                  {perf && perf.completedJobs > 0 && <div style={{ fontSize: 11, color: "#34D399", marginTop: 2 }}>{perf.completedJobs} jobs completed · avg {perf.avgHours.toFixed(1)}h repair time</div>}
+                </div>
+              );
+            })}
             {data.team.length === 0 && <div style={{ fontSize: 12, color: "#5B6672" }}>No team members added yet.</div>}
           </div>
           {canEdit && (
@@ -1372,12 +1501,18 @@ function SettingsPage({ data, setData, session, logActivity }) {
                 <select style={inputStyle} value={newMember.role} onChange={(e) => setNewMember((m) => ({ ...m, role: e.target.value }))}>{ROLES.map((r) => <option key={r} value={r}>{r}</option>)}</select>
               </div>
               {newMember.role === "Technician" && (
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input style={{ ...inputStyle, flex: 1 }} value={newMember.skills} onChange={(e) => setNewMember((m) => ({ ...m, skills: e.target.value }))} placeholder="Skills, comma separated (e.g. boiler, compressor)" />
-                  <select style={inputStyle} value={newMember.shift} onChange={(e) => setNewMember((m) => ({ ...m, shift: e.target.value }))}>
-                    <option value="Day">Day shift</option><option value="Night">Night shift</option><option value="Swing">Swing shift</option>
-                  </select>
-                </div>
+                <>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input style={{ ...inputStyle, flex: 1 }} value={newMember.skills} onChange={(e) => setNewMember((m) => ({ ...m, skills: e.target.value }))} placeholder="Skills, comma separated (e.g. boiler, compressor)" />
+                    <select style={inputStyle} value={newMember.shift} onChange={(e) => setNewMember((m) => ({ ...m, shift: e.target.value }))}>
+                      <option value="Day">Day shift</option><option value="Night">Night shift</option><option value="Swing">Swing shift</option>
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input style={{ ...inputStyle, flex: 1 }} value={newMember.certifications} onChange={(e) => setNewMember((m) => ({ ...m, certifications: e.target.value }))} placeholder="Certifications, comma separated (optional)" />
+                    <input type="number" style={{ ...inputStyle, width: 100 }} value={newMember.experienceYears} onChange={(e) => setNewMember((m) => ({ ...m, experienceYears: e.target.value }))} placeholder="Years exp" />
+                  </div>
+                </>
               )}
               <Button variant="ghost" onClick={addMember} style={{ justifyContent: "center" }}><Plus size={14} /> Add team member</Button>
             </div>
@@ -1401,10 +1536,45 @@ function SettingsPage({ data, setData, session, logActivity }) {
           <div style={{ fontSize: 12, color: "#8A96A3" }}>All notification types (alerts, approvals, overdue maintenance, low parts) are on by default in this prototype.</div>
         </Card>
 
-        <Card style={{ padding: 20 }}>
-          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Integrations</div>
-          <div style={{ fontSize: 12, color: "#8A96A3" }}>MEO is built to connect to the systems you already have — predictive maintenance platforms, CMMS, ERP, and IoT sensors — rather than replace them. In this MVP, that data is entered manually (Alerts already has a sensor-data field ready for a live feed); real API connections come later.</div>
+        <Card style={{ padding: 20, gridColumn: "1 / -1" }}>
+          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Connected systems</div>
+          <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 14 }}>MEO is built to sit on top of the systems you already run — not replace them. None of these are live yet; everything below is entered manually for now. The data model is already shaped to accept a real feed the moment a connection exists.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "8px 20px" }}>
+            {[
+              ["Industrial protocols", "OPC UA, Modbus TCP, MQTT, EtherNet/IP"],
+              ["Enterprise software", "SAP PM, IBM Maximo, Oracle Maintenance"],
+              ["CMMS", "MaintainX, UpKeep, Fiix, Limble"],
+              ["Predictive maintenance", "Augury, Tractian, Senseye"],
+              ["Cloud IoT platforms", "Azure IoT Hub, AWS IoT Core"],
+            ].map(([label, examples]) => (
+              <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#12161A", borderRadius: 6 }}>
+                <div><div style={{ fontSize: 12.5, fontWeight: 600 }}>{label}</div><div style={{ fontSize: 10.5, color: "#5B6672" }}>{examples}</div></div>
+                <Badge color="#8A96A3">Not connected</Badge>
+              </div>
+            ))}
+          </div>
         </Card>
+
+        <Card style={{ padding: 20 }}>
+          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Live sensor data</div>
+          <div style={{ fontSize: 12, color: "#8A96A3" }}>Alerts already have a sensor-data field, ready for a live telemetry feed later. For now, log readings manually there when you report an alert.</div>
+        </Card>
+
+        <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
+          <Card style={{ padding: 20, border: "1px solid #E5484D40" }}>
+            <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 8, color: "#E5484D" }}>Danger zone</div>
+            <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 12 }}>Permanently erases every machine, alert, decision, work order, part, and team member in this workspace — including any sample/demo data. This cannot be undone.</div>
+            {!confirmReset ? (
+              <Button variant="danger" onClick={() => setConfirmReset(true)}>Reset workspace data</Button>
+            ) : (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12.5, color: "#E5484D", fontWeight: 600 }}>Are you sure? This can't be undone.</span>
+                <Button variant="danger" onClick={resetWorkspace}>Yes, erase everything</Button>
+                <Button variant="ghost" onClick={() => setConfirmReset(false)}>Cancel</Button>
+              </div>
+            )}
+          </Card>
+        </RoleGate>
       </div>
     </div>
   );
