@@ -5,7 +5,8 @@ import {
   Clock, MapPin, Factory, Calendar, ChevronRight, CheckCircle2, TrendingUp,
   ChevronDown, RefreshCw, Loader2, Sparkles, ShieldAlert, Activity, Wrench,
   Package, Users, Settings as SettingsIcon, Hammer, PauseCircle, XCircle,
-  CheckCheck, ArrowRight, Camera, FileText
+  CheckCheck, ArrowRight, Camera, FileText, Plug, Radio, GitBranch, Map,
+  LineChart, MessageCircle, Send, HelpCircle, Building2, Search, ExternalLink
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
@@ -131,7 +132,7 @@ function createWorkOrderForDecision(d, decision, chosenTechnician) {
     priority: decision.risk, dueDate: new Date().toISOString(), requiredParts: decision.requiredParts || "", estimatedHours: null,
     status: chosenTechnician || decision.suggestedTechnician ? "Assigned" : "Pending", decisionId: decision.id, technicianNotes: "",
     startedAt: null, completedAt: null, actualCost: null, recommendedTimeWindow: decision.recommendedTimeWindow || "",
-    failureMode: "", rootCause: "", correctiveAction: "", preventiveAction: "",
+    failureMode: "", rootCause: "", correctiveAction: "", preventiveAction: "", createdAt: new Date().toISOString(),
   };
   return { workOrders: [wo, ...d.workOrders], woCounter, workOrderId: wo.id, duplicatePrevented: false, woNumber };
 }
@@ -271,6 +272,7 @@ function PageHeader({ title, subtitle, action }) {
 
 export default function App() {
   useFonts();
+  const [entryChoice, setEntryChoice] = useState(null); // null | "demo" | "connect"
   const [session, setSession] = useState(null);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -284,8 +286,14 @@ export default function App() {
     (async () => {
       try {
         const res = await storage.get(workspaceKey);
-        setData(res && res.value ? JSON.parse(res.value) : emptyData());
-      } catch (e) { setData(emptyData()); } finally { setLoading(false); }
+        if (res && res.value) {
+          setData(JSON.parse(res.value));
+        } else if (session?.isDemo) {
+          setData(seedData());
+        } else {
+          setData(emptyData());
+        }
+      } catch (e) { setData(session?.isDemo ? seedData() : emptyData()); } finally { setLoading(false); }
     })();
   }, [workspaceKey]);
 
@@ -302,15 +310,17 @@ export default function App() {
     setData((d) => ({ ...d, activity: [{ id: uid("a"), text, at: new Date().toISOString() }, ...d.activity].slice(0, 60) }));
   }, []);
 
-  if (!session) return <Login onJoin={setSession} />;
+  if (!entryChoice) return <WelcomeScreen onChoose={setEntryChoice} />;
+  if (!session) return <Login onJoin={setSession} isDemo={entryChoice === "demo"} onBack={() => setEntryChoice(null)} />;
   if (loading || !data) return <LoadingScreen />;
 
   const notifications = computeNotifications(data);
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#12161A", fontFamily: F_BODY, color: "#EAEEF1" }}>
-      <Sidebar tab={tab} setTab={setTab} session={session} onLeave={() => setSession(null)} notifCount={notifications.length} pendingDecisions={data.decisions.filter((d) => d.status === "Pending").length} />
+      <Sidebar tab={tab} setTab={setTab} session={session} onLeave={() => { setSession(null); setEntryChoice(null); }} notifCount={notifications.length} pendingDecisions={data.decisions.filter((d) => d.status === "Pending").length} />
       <main style={{ flex: 1, minWidth: 0, padding: "28px 32px", maxWidth: 1220 }}>
+        {session.isDemo && <DemoModeBanner />}
         {tab === "dashboard" && <Dashboard data={data} session={session} setTab={setTab} setData={setData} logActivity={logActivity} />}
         {tab === "assets" && <Assets data={data} setData={setData} session={session} logActivity={logActivity} />}
         {tab === "alerts" && <Alerts data={data} setData={setData} session={session} logActivity={logActivity} />}
@@ -320,6 +330,12 @@ export default function App() {
         {tab === "inventory" && <Inventory data={data} setData={setData} session={session} logActivity={logActivity} />}
         {tab === "reports" && <Reports data={data} />}
         {tab === "notifications" && <Notifications items={notifications} />}
+        {tab === "integrations" && <IntegrationCenter data={data} />}
+        {tab === "livedata" && <LiveDataMonitor data={data} />}
+        {tab === "timeline" && <EventTimeline data={data} />}
+        {tab === "fleet" && <FleetHealthMap data={data} setTab={setTab} />}
+        {tab === "executive" && <ExecutiveDashboard data={data} session={session} />}
+        {tab === "copilot" && <AiCopilot data={data} />}
         {tab === "settings" && <SettingsPage data={data} setData={setData} session={session} logActivity={logActivity} />}
       </main>
     </div>
@@ -331,6 +347,52 @@ function LoadingScreen() {
     <div style={{ minHeight: "100vh", background: "#12161A", display: "flex", alignItems: "center", justifyContent: "center", color: "#8A96A3" }}>
       <Loader2 size={22} style={{ marginRight: 10, animation: "meo-spin 1s linear infinite" }} /> Loading workspace…
       <style>{`@keyframes meo-spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+
+function WelcomeScreen({ onChoose }) {
+  useFonts();
+  return (
+    <div style={{ minHeight: "100vh", background: "#12161A", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F_BODY, color: "#EAEEF1", padding: 20 }}>
+      <div style={{ width: 520, maxWidth: "100%" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 24, justifyContent: "center" }}>
+          <div style={{ width: 34, height: 34, borderRadius: 8, background: "#F5A623", display: "flex", alignItems: "center", justifyContent: "center" }}><Gauge size={19} color="#14181C" /></div>
+          <div><div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 18 }}>MEO</div><div style={{ fontSize: 11, color: "#8A96A3", fontFamily: F_MONO, letterSpacing: 0.4 }}>MAINTENANCE EXECUTION OS</div></div>
+        </div>
+        <div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 24, textAlign: "center", marginBottom: 10 }}>Welcome to MEO</div>
+        <div style={{ fontSize: 13, color: "#8A96A3", textAlign: "center", marginBottom: 28, lineHeight: 1.5 }}>Turn maintenance insights into fast, coordinated action before downtime happens.</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <Card style={{ padding: 22, cursor: "pointer" }} onClick={() => onChoose("demo")}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 9, background: "#F5A6231A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Sparkles size={19} color="#F5A623" /></div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 15.5 }}>🚀 Explore Interactive Demo</div>
+                <div style={{ fontSize: 12, color: "#8A96A3", marginTop: 2 }}>Preloaded sample machines, alerts, and decisions — see MEO in action instantly.</div>
+              </div>
+              <ChevronRight size={16} color="#5B6672" />
+            </div>
+          </Card>
+          <Card style={{ padding: 22, cursor: "pointer" }} onClick={() => onChoose("connect")}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 9, background: "#4C9FE51A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Building2 size={19} color="#4C9FE5" /></div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 15.5 }}>🏭 Connect Your Plant</div>
+                <div style={{ fontSize: 12, color: "#8A96A3", marginTop: 2 }}>Start with a clean workspace and register your real machines and team.</div>
+              </div>
+              <ChevronRight size={16} color="#5B6672" />
+            </div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DemoModeBanner() {
+  return (
+    <div style={{ background: "#F5A6231A", border: "1px solid #F5A62340", borderRadius: 8, padding: "9px 14px", marginBottom: 18, display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#F5A623", fontWeight: 600 }}>
+      <Sparkles size={14} /> Demo Mode — everything here is sample data, not live production data.
     </div>
   );
 }
@@ -351,32 +413,40 @@ function WorkflowDiagram() {
   );
 }
 
-function Login({ onJoin }) {
+function Login({ onJoin, isDemo, onBack }) {
   useFonts();
-  const [workspace, setWorkspace] = useState("");
-  const [name, setName] = useState("");
+  const [workspace, setWorkspace] = useState(isDemo ? "demo-" + Math.random().toString(36).slice(2, 8) : "");
+  const [name, setName] = useState(isDemo ? "Demo User" : "");
   const [role, setRole] = useState("Manager");
   return (
     <div style={{ minHeight: "100vh", background: "#12161A", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F_BODY, color: "#EAEEF1", padding: 20 }}>
       <div style={{ width: 460, maxWidth: "100%" }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: "#8A96A3", fontSize: 12, cursor: "pointer", marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>← Back</button>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
           <div style={{ width: 34, height: 34, borderRadius: 8, background: "#F5A623", display: "flex", alignItems: "center", justifyContent: "center" }}><Gauge size={19} color="#14181C" /></div>
           <div><div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 18 }}>MEO</div><div style={{ fontSize: 11, color: "#8A96A3", fontFamily: F_MONO, letterSpacing: 0.4 }}>MAINTENANCE EXECUTION OS</div></div>
         </div>
 
-        <div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 21, lineHeight: 1.35, marginBottom: 10 }}>Turn maintenance insights into fast, coordinated action before downtime happens.</div>
-        <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 18, lineHeight: 1.5 }}>MEO helps maintenance teams prioritize, decide, and execute the right maintenance actions — the coordination layer between what your systems detect and what your team actually does about it.</div>
+        {!isDemo && (
+          <>
+            <div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 21, lineHeight: 1.35, marginBottom: 10 }}>Turn maintenance insights into fast, coordinated action before downtime happens.</div>
+            <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 18, lineHeight: 1.5 }}>MEO helps maintenance teams prioritize, decide, and execute the right maintenance actions — the coordination layer between what your systems detect and what your team actually does about it.</div>
+            <Card style={{ padding: 16, marginBottom: 18 }}>
+              <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 10 }}>How it works</div>
+              <WorkflowDiagram />
+            </Card>
+          </>
+        )}
 
-        <Card style={{ padding: 16, marginBottom: 18 }}>
-          <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 10 }}>How it works</div>
-          <WorkflowDiagram />
-        </Card>
+        {isDemo && (
+          <div style={{ fontSize: 13, color: "#8A96A3", marginBottom: 18, lineHeight: 1.5 }}>You're entering demo mode — a workspace preloaded with sample machines, alerts, and decisions so you can click around freely. Nothing here is real production data.</div>
+        )}
 
         <Card style={{ padding: 24 }}>
-          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 17, marginBottom: 4 }}>Sign in to your workspace</div>
-          <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 20 }}>Enter your company's workspace name to join or create it.</div>
+          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 17, marginBottom: 4 }}>{isDemo ? "Enter the demo" : "Sign in to your workspace"}</div>
+          <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 20 }}>{isDemo ? "We've generated a private demo workspace for you." : "Enter your company's workspace name to join or create it."}</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <Field label="Company workspace"><input style={inputStyle} placeholder="e.g. northgate-plant-2" value={workspace} onChange={(e) => setWorkspace(e.target.value)} /></Field>
+            <Field label="Company workspace"><input style={inputStyle} placeholder="e.g. northgate-plant-2" value={workspace} onChange={(e) => setWorkspace(e.target.value)} disabled={isDemo} /></Field>
             <Field label="Your name"><input style={inputStyle} placeholder="e.g. J. Alvarez" value={name} onChange={(e) => setName(e.target.value)} /></Field>
             <Field label="Your role">
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -385,14 +455,15 @@ function Login({ onJoin }) {
                 ))}
               </div>
             </Field>
-            <Button disabled={!workspace.trim() || !name.trim()} onClick={() => onJoin({ workspace: workspace.trim(), name: name.trim(), role })} style={{ justifyContent: "center", marginTop: 6 }}>
-              Enter workspace <ChevronRight size={15} />
+            <Button disabled={!workspace.trim() || !name.trim()} onClick={() => onJoin({ workspace: workspace.trim(), name: name.trim(), role, isDemo: !!isDemo })} style={{ justifyContent: "center", marginTop: 6 }}>
+              {isDemo ? "Enter demo" : "Enter workspace"} <ChevronRight size={15} />
             </Button>
           </div>
         </Card>
         <div style={{ textAlign: "center", fontSize: 11.5, color: "#5B6672", marginTop: 14 }}>Prototype auth — data is shared per workspace name, not password-protected.</div>
       </div>
     </div>
+
   );
 }
 
@@ -407,7 +478,13 @@ function Sidebar({ tab, setTab, session, onLeave, notifCount, pendingDecisions }
     { id: "workorders", label: "Work Orders", icon: ClipboardList },
     { id: "technicians", label: "Technicians", icon: Hammer },
     { id: "inventory", label: "Inventory", icon: Package },
+    { id: "fleet", label: "Fleet Health Map", icon: Map },
+    { id: "livedata", label: "Live Data Monitor", icon: Radio },
+    { id: "timeline", label: "Event Timeline", icon: GitBranch },
+    { id: "copilot", label: "AI Copilot", icon: MessageCircle },
+    { id: "integrations", label: "Integration Center", icon: Plug },
     { id: "reports", label: "Reports", icon: BarChart3 },
+    { id: "executive", label: "Executive Dashboard", icon: LineChart },
     { id: "notifications", label: "Notifications", icon: Bell, badge: notifCount },
     { id: "settings", label: "Settings", icon: SettingsIcon },
   ];
@@ -528,6 +605,37 @@ function DashboardHeroDecision({ decision, machine, data, session, setData, logA
   );
 }
 
+function ConnectPlantChecklist({ data, setTab }) {
+  const steps = [
+    { label: "Create organization", done: true, note: "You're in — this workspace is your organization." },
+    { label: "Register assets", done: data.machines.length > 0, action: () => setTab("assets"), actionLabel: "Register machines" },
+    { label: "Import CMMS", done: false, comingSoon: true },
+    { label: "Connect ERP", done: false, comingSoon: true },
+    { label: "Connect PLC / SCADA", done: false, comingSoon: true },
+    { label: "Connect IoT", done: false, comingSoon: true },
+    { label: "Invite technicians", done: data.team.length > 0, action: () => setTab("settings"), actionLabel: "Add team" },
+    { label: "Start receiving live data", done: data.alerts.some((a) => a.sensorNote), action: () => setTab("livedata"), actionLabel: "View Live Data Monitor" },
+  ];
+  return (
+    <Card style={{ padding: 20, marginBottom: 22 }}>
+      <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 15, marginBottom: 4 }}>Connect Your Plant</div>
+      <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 16 }}>A quick checklist to get MEO running on your real operation.</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {steps.map((s) => (
+          <div key={s.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 10px", background: "#12161A", borderRadius: 7 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+              {s.done ? <CheckCircle2 size={15} color="#34D399" /> : <div style={{ width: 15, height: 15, borderRadius: "50%", border: "1.5px solid #5B6672", flexShrink: 0 }} />}
+              <span style={{ fontSize: 13, color: s.done ? "#EAEEF1" : "#C7CED5" }}>{s.label}</span>
+              {s.comingSoon && <Badge color="#8A96A3">Coming soon</Badge>}
+            </div>
+            {s.action && !s.done && <button onClick={s.action} style={{ background: "none", border: "none", color: "#F5A623", fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}>{s.actionLabel} →</button>}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 function Dashboard({ data, session, setTab, setData, logActivity }) {
   const running = data.machines.filter((m) => m.status === "Running").length;
   const atRisk = data.machines.filter((m) => m.status === "At Risk").length;
@@ -553,6 +661,8 @@ function Dashboard({ data, session, setTab, setData, logActivity }) {
   return (
     <div>
       <PageHeader title={`Good ${greeting()}, ${session.name.split(" ")[0]}`} subtitle="What needs a decision, why it matters, and what happens if you wait." />
+
+      {!session.isDemo && data.machines.length === 0 && <ConnectPlantChecklist data={data} setTab={setTab} />}
 
       {topDecision ? (
         <DashboardHeroDecision decision={topDecision} machine={topMachine} data={data} session={session} setData={setData} logActivity={logActivity} setTab={setTab} />
@@ -899,6 +1009,8 @@ function DecisionCenter({ data, setData, session, logActivity }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [decideModal, setDecideModal] = useState(null); // { decision, action: 'Approved'|'Delayed'|'Rejected' }
+  const [simModal, setSimModal] = useState(null); // decision being simulated
+  const [rcModal, setRcModal] = useState(null); // decision being root-cause-explored
   const canDecide = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
 
   async function generate() {
@@ -922,7 +1034,7 @@ function DecisionCenter({ data, setData, session, logActivity }) {
           rootCauseProbability: r.rootCauseProbability || null, safetyChecklist: Array.isArray(r.safetyChecklist) ? r.safetyChecklist : [],
           approvalRequired: r.approvalRequired !== false,
           suggestedTechnician: matches[0]?.name || null, technicianReason: matches[0]?.reason || "",
-          status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null,
+          status: "Pending", decisionReason: "", decidedBy: "", decidedAt: null, workOrderId: null, generatedAt: new Date().toISOString(),
         };
       }).filter(Boolean);
       setData((d) => ({ ...d, aiRun: { generatedAt: new Date().toISOString() }, decisions: [...newDecisions, ...d.decisions.filter((old) => old.status !== "Pending")] }));
@@ -1025,6 +1137,10 @@ function DecisionCenter({ data, setData, session, logActivity }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>{techReady ? <CheckCircle2 size={13} color="#34D399" /> : <AlertTriangle size={13} color="#F5A623" />}{techReady ? `Technician available${matches[0] ? ` — ${matches[0].name} suggested` : ""}` : "No technician available in team roster"}</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5 }}>{partsReady ? <CheckCircle2 size={13} color="#34D399" /> : <AlertTriangle size={13} color="#E5484D" />}{neededParts.length === 0 ? "No specific parts required" : partsReady ? `Spare part in stock: ${neededParts.join(", ")}` : `Spare part missing: ${neededParts.join(", ")}${altPart ? ` — alternative available: ${altPart.alternativePartName}` : ""}`}</div>
                 </div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <button onClick={() => setSimModal(d)} style={{ fontSize: 11.5, padding: "6px 10px", borderRadius: 6, background: "#12161A", border: "1px solid #2B333B", color: "#8A96A3", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}><LineChart size={12} /> Simulate: what if we delay?</button>
+                  <button onClick={() => setRcModal(d)} style={{ fontSize: 11.5, padding: "6px 10px", borderRadius: 6, background: "#12161A", border: "1px solid #2B333B", color: "#8A96A3", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}><Search size={12} /> Explore root cause</button>
+                </div>
                 <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
                   <div style={{ display: "flex", gap: 10 }}>
                     <Button variant="success" onClick={() => openDecide(d, "Approved")}><CheckCheck size={14} /> Approve</Button>
@@ -1056,7 +1172,122 @@ function DecisionCenter({ data, setData, session, logActivity }) {
       )}
 
       {decideModal && <DecideModal decision={decideModal.decision} action={decideModal.action} machine={data.machines.find((m) => m.id === decideModal.decision.machineId)} data={data} onClose={() => setDecideModal(null)} onConfirm={confirmDecide} />}
+      {simModal && <DecisionSimulatorModal decision={simModal} machine={data.machines.find((m) => m.id === simModal.machineId)} onClose={() => setSimModal(null)} />}
+      {rcModal && <RootCauseModal decision={rcModal} machine={data.machines.find((m) => m.id === rcModal.machineId)} data={data} onClose={() => setRcModal(null)} />}
     </div>
+  );
+}
+
+function DecisionSimulatorModal({ decision, machine, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const prompt = `You are MEO's Decision Simulator. Given this real pending maintenance decision, project what happens if the manager delays acting on it instead of approving it now. Use only the evidence given — do not invent new facts.
+
+DECISION: ${JSON.stringify({ machine: machine?.name, risk: decision.risk, downtimeCost: decision.downtimeCost, confidence: decision.confidence, reason: decision.reason, action: decision.action })}
+
+Respond with ONLY a raw JSON object (no markdown fences, no prose) in this shape:
+{"downtimeRiskIncreasePercent": <integer, how much more likely/severe downtime risk becomes if delayed>, "expectedProductionLoss": <integer USD estimate if delayed>, "failureChancePercent": <integer 0-100, estimated chance of failure before the recommended window closes if delayed>, "recommendation": "<short phrase, e.g. 'Do not delay' or 'Delay is acceptable for 24 hours'>", "reasoning": "<1-2 sentences grounded in the decision data given>"}`;
+        const res = await fetch("/api/generate-priorities", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || "Request failed");
+        const clean = (json.text || "").trim().replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+        setResult(JSON.parse(clean));
+      } catch (e) {
+        setError("Couldn't run the simulation right now.");
+      } finally { setLoading(false); }
+    })();
+  }, []);
+
+  return (
+    <Modal title="What if we delay this repair?" onClose={onClose}>
+      <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 16 }}>{decision.action} — <b style={{ color: "#EAEEF1" }}>{machine?.name}</b></div>
+      {loading ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A96A3", fontSize: 13 }}><Loader2 size={15} style={{ animation: "meo-spin 1s linear infinite" }} /> Simulating…</div>
+      ) : error ? (
+        <div style={{ color: "#E5484D", fontSize: 13 }}>{error}</div>
+      ) : result ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ background: "#12161A", borderRadius: 8, padding: 12 }}><div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", marginBottom: 4 }}>Downtime risk</div><div style={{ fontSize: 18, fontWeight: 700, color: "#E5484D" }}>+{result.downtimeRiskIncreasePercent}%</div></div>
+            <div style={{ background: "#12161A", borderRadius: 8, padding: 12 }}><div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", marginBottom: 4 }}>Chance of failure</div><div style={{ fontSize: 18, fontWeight: 700, color: "#F5A623" }}>{result.failureChancePercent}%</div></div>
+          </div>
+          <div style={{ background: "#12161A", borderRadius: 8, padding: 12 }}><div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", marginBottom: 4 }}>Expected production loss</div><div style={{ fontSize: 20, fontWeight: 700, color: "#E5484D" }}>{fmtMoney(result.expectedProductionLoss)}</div></div>
+          <div style={{ background: "#F5A6231A", border: "1px solid #F5A62340", borderRadius: 8, padding: 12 }}>
+            <div style={{ fontSize: 10.5, color: "#F5A623", textTransform: "uppercase", marginBottom: 4, fontWeight: 700 }}>Recommended</div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{result.recommendation}</div>
+            <div style={{ fontSize: 12, color: "#C7CED5" }}>{result.reasoning}</div>
+          </div>
+          <div style={{ fontSize: 10.5, color: "#5B6672" }}>This is an AI-generated projection based on the decision's own data — not a guarantee.</div>
+        </div>
+      ) : null}
+    </Modal>
+  );
+}
+
+function RootCauseModal({ decision, machine, data, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const history = data.alerts.filter((a) => a.machineId === decision.machineId).map((a) => ({ type: a.type, severity: a.severity, description: a.description, sensorNote: a.sensorNote || null, date: a.date }));
+        const pastRepairs = data.workOrders.filter((w) => w.machineId === decision.machineId && w.status === "Completed").map((w) => ({ failureMode: w.failureMode, rootCause: w.rootCause, completedAt: w.completedAt }));
+        const prompt = `You are MEO's Root Cause Explorer. Based ONLY on the real alert history and past repair records below for this one machine, estimate the most likely root causes for the current issue. If there is very little history, say so plainly and give at most 1-2 tentative causes with low confidence rather than inventing a detailed breakdown.
+
+CURRENT ISSUE: ${decision.action} — ${decision.reason}
+ALERT HISTORY: ${JSON.stringify(history)}
+PAST REPAIRS: ${JSON.stringify(pastRepairs)}
+
+Respond with ONLY a raw JSON object (no markdown fences, no prose) in this shape:
+{"causes": [{"cause": "<short name>", "likelihoodPercent": <integer, all causes should sum to roughly 100>}], "recommendedInspections": ["<short inspection item>"], "confidenceNote": "<1 sentence on how much real evidence supports this>"}`;
+        const res = await fetch("/api/generate-priorities", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || "Request failed");
+        const clean = (json.text || "").trim().replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+        setResult(JSON.parse(clean));
+      } catch (e) {
+        setError("Couldn't run root cause analysis right now.");
+      } finally { setLoading(false); }
+    })();
+  }, []);
+
+  return (
+    <Modal title="Root cause explorer" onClose={onClose}>
+      <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 16 }}>{decision.action} — <b style={{ color: "#EAEEF1" }}>{machine?.name}</b></div>
+      {loading ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A96A3", fontSize: 13 }}><Loader2 size={15} style={{ animation: "meo-spin 1s linear infinite" }} /> Analyzing…</div>
+      ) : error ? (
+        <div style={{ color: "#E5484D", fontSize: 13 }}>{error}</div>
+      ) : result ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", marginBottom: 8, fontWeight: 700 }}>Most likely causes</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(result.causes || []).map((c, i) => (
+                <div key={i}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 3 }}><span>{c.cause}</span><span style={{ fontFamily: F_MONO, color: "#F5A623" }}>{c.likelihoodPercent}%</span></div>
+                  <div style={{ height: 5, background: "#2B333B", borderRadius: 3, overflow: "hidden" }}><div style={{ width: `${c.likelihoodPercent}%`, height: "100%", background: "#F5A623" }} /></div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", marginBottom: 8, fontWeight: 700 }}>Recommended inspections</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {(result.recommendedInspections || []).map((item, i) => <div key={i} style={{ fontSize: 12.5, display: "flex", gap: 6 }}><CheckCircle2 size={13} color="#34D399" style={{ flexShrink: 0, marginTop: 1 }} />{item}</div>)}
+            </div>
+          </div>
+          <div style={{ fontSize: 10.5, color: "#5B6672", background: "#12161A", borderRadius: 8, padding: 10 }}>{result.confidenceNote} — AI estimate, not a certified diagnosis.</div>
+        </div>
+      ) : null}
+    </Modal>
   );
 }
 
@@ -1438,6 +1669,316 @@ function Reports({ data }) {
           )}
         </Card>
       </div>
+    </div>
+  );
+}
+
+/* ---------------------------- Integration Center ----------------------------- */
+
+function IntegrationCenter({ data }) {
+  const [refreshedAt, setRefreshedAt] = useState(null);
+  const external = [
+    { name: "SAP PM", category: "Enterprise software" },
+    { name: "IBM Maximo", category: "Enterprise software" },
+    { name: "Oracle ERP", category: "Enterprise software" },
+    { name: "MaintainX / UpKeep / Fiix", category: "CMMS" },
+    { name: "Augury / Tractian / Senseye", category: "Predictive maintenance" },
+    { name: "Azure IoT Hub / AWS IoT Core", category: "Cloud IoT" },
+    { name: "MQTT Broker", category: "Industrial protocol" },
+    { name: "SCADA / PLC (OPC UA, Modbus)", category: "Industrial protocol" },
+  ];
+  const internal = [
+    { name: "MEO Decision Engine (Claude)", status: "Active", lastSync: data.aiRun?.generatedAt || null, assets: data.machines.length, errors: "None" },
+    { name: "REST API (internal)", status: "Active", lastSync: new Date().toISOString(), assets: data.machines.length, errors: "None" },
+  ];
+  return (
+    <div>
+      <PageHeader title="Integration Center" subtitle="MEO's control room — every system it's built to connect to, and its real current status." />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, marginBottom: 20 }}>
+        {internal.map((it) => (
+          <Card key={it.name} style={{ padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontWeight: 600, fontSize: 13.5 }}>{it.name}</div>
+              <Badge color="#34D399"><Dot color="#34D399" />{it.status}</Badge>
+            </div>
+            <div style={{ fontSize: 11.5, color: "#8A96A3", display: "flex", flexDirection: "column", gap: 2 }}>
+              <span>Last sync: {it.lastSync ? relTime(it.lastSync) : "never"}</span>
+              <span>Assets covered: {it.assets}</span>
+              <span>Errors: {it.errors}</span>
+            </div>
+          </Card>
+        ))}
+      </div>
+      <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 12 }}>
+        Everything below is real — genuinely not connected yet. This isn't decoration; it's an honest status board. Connecting any of these requires an API/credentials relationship with that vendor, which comes after the MVP stage.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+        {external.map((it) => (
+          <Card key={it.name} style={{ padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8, gap: 8 }}>
+              <div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{it.name}</div><div style={{ fontSize: 10.5, color: "#5B6672" }}>{it.category}</div></div>
+              <Badge color="#8A96A3"><Dot color="#5B6672" />Not connected</Badge>
+            </div>
+            <div style={{ fontSize: 11.5, color: "#5B6672", display: "flex", flexDirection: "column", gap: 2, marginBottom: 10 }}>
+              <span>Last sync: —</span><span>Assets covered: 0</span><span>Errors: —</span>
+            </div>
+            <button onClick={() => setRefreshedAt(it.name)} style={{ fontSize: 11, padding: "5px 10px", borderRadius: 5, background: "#12161A", border: "1px solid #2B333B", color: "#8A96A3", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+              <RefreshCw size={11} /> Refresh
+            </button>
+            {refreshedAt === it.name && <div style={{ fontSize: 10.5, color: "#5B6672", marginTop: 6 }}>Checked — still no connection configured.</div>}
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------- Live Data Monitor ----------------------------- */
+
+function LiveDataMonitor({ data }) {
+  const readings = data.alerts.filter((a) => a.sensorNote).sort((a, b) => new Date(b.date) - new Date(a.date));
+  return (
+    <div>
+      <PageHeader title="Live Data Monitor" subtitle="Sensor readings logged with alerts — manually entered for now, structured to accept a real live feed later." />
+      {readings.length === 0 ? (
+        <Card style={{ padding: 32, textAlign: "center" }}>
+          <Radio size={26} style={{ opacity: 0.4, marginBottom: 10 }} />
+          <div style={{ fontSize: 13.5, color: "#8A96A3", maxWidth: 420, margin: "0 auto" }}>No sensor readings logged yet. When reporting an alert in the Alerts tab, fill in the optional "Sensor data" field — those readings will show up here. Once a real IoT feed is connected, this page updates automatically instead.</div>
+        </Card>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {readings.map((a) => {
+            const m = data.machines.find((m) => m.id === a.machineId);
+            return (
+              <Card key={a.id} style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 8, background: "#4C9FE51A", display: "flex", alignItems: "center", justifyContent: "center" }}><Radio size={16} color="#4C9FE5" /></div>
+                  <div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{m?.name || "Unknown machine"}</div><div style={{ fontSize: 12.5, color: "#C7CED5", fontFamily: F_MONO }}>{a.sensorNote}</div></div>
+                </div>
+                <div style={{ fontSize: 11, color: "#5B6672", fontFamily: F_MONO }}>logged {relTime(a.date)}</div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------- Event Timeline ----------------------------- */
+
+function EventTimeline({ data }) {
+  const events = [];
+  data.alerts.forEach((a) => { const m = data.machines.find((m) => m.id === a.machineId); events.push({ at: a.date, color: RISK_COLOR[a.severity] || "#8A96A3", text: `${a.type} reported on ${m?.name || "a machine"} — ${a.severity}` }); });
+  data.decisions.forEach((d) => {
+    const m = data.machines.find((m) => m.id === d.machineId);
+    if (d.generatedAt) events.push({ at: d.generatedAt, color: "#F5A623", text: `Decision generated: ${d.action} (${m?.name || ""})` });
+    if (d.decidedAt) events.push({ at: d.decidedAt, color: DECISION_STATUS_COLOR[d.status] || "#8A96A3", text: `${d.decidedBy} ${d.status.toLowerCase()}: ${d.action}` });
+  });
+  data.workOrders.forEach((w) => {
+    const m = data.machines.find((m) => m.id === w.machineId);
+    if (w.createdAt) events.push({ at: w.createdAt, color: "#4C9FE5", text: `${w.woNumber} created for ${m?.name || ""}` });
+    if (w.startedAt) events.push({ at: w.startedAt, color: "#F5A623", text: `${w.woNumber} started by ${w.assignedTech}` });
+    if (w.completedAt) events.push({ at: w.completedAt, color: "#34D399", text: `${w.woNumber} completed` });
+  });
+  events.sort((a, b) => new Date(b.at) - new Date(a.at));
+
+  return (
+    <div>
+      <PageHeader title="Event Timeline" subtitle="Every alert, decision, approval, and repair — in order, for full auditability." />
+      {events.length === 0 ? <EmptyState icon={GitBranch} text="Nothing has happened yet." /> : (
+        <Card style={{ padding: 20 }}>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {events.slice(0, 60).map((e, idx) => (
+              <div key={idx} style={{ display: "flex", gap: 14, paddingBottom: 16 }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  <div style={{ width: 9, height: 9, borderRadius: "50%", background: e.color, flexShrink: 0, marginTop: 4 }} />
+                  {idx < events.length - 1 && idx < 59 && <div style={{ width: 1, flex: 1, background: "#2B333B", marginTop: 4 }} />}
+                </div>
+                <div style={{ paddingBottom: 2 }}>
+                  <div style={{ fontSize: 11, color: "#5B6672", fontFamily: F_MONO, marginBottom: 2 }}>{fmtDateTime(e.at)}</div>
+                  <div style={{ fontSize: 13 }}>{e.text}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------- Fleet Health Map ----------------------------- */
+
+function FleetHealthMap({ data, setTab }) {
+  const [expanded, setExpanded] = useState(null);
+  const byLocation = {};
+  data.machines.forEach((m) => {
+    const loc = m.location || "Unspecified";
+    if (!byLocation[loc]) byLocation[loc] = [];
+    byLocation[loc].push(m);
+  });
+  return (
+    <div>
+      <PageHeader title="Fleet Health Map" subtitle="Every registered machine, grouped by location." />
+      {Object.keys(byLocation).length === 0 ? <EmptyState icon={Map} text="No machines registered yet." /> : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {Object.entries(byLocation).map(([loc, machines]) => {
+            const healthy = machines.filter((m) => m.status === "Running").length;
+            const warning = machines.filter((m) => m.status === "At Risk" || m.status === "Maintenance").length;
+            const critical = machines.filter((m) => m.status === "Offline").length;
+            const isOpen = expanded === loc;
+            return (
+              <Card key={loc} style={{ padding: 18 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setExpanded(isOpen ? null : loc)}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 15 }}><MapPin size={15} color="#8A96A3" />{loc}</div>
+                  <div style={{ display: "flex", gap: 12, fontSize: 12.5 }}>
+                    <span style={{ color: "#34D399" }}>🟢 {healthy} Healthy</span>
+                    <span style={{ color: "#F5A623" }}>🟡 {warning} Warning</span>
+                    <span style={{ color: "#E5484D" }}>🔴 {critical} Offline</span>
+                    <ChevronDown size={14} color="#5B6672" style={{ transform: isOpen ? "rotate(180deg)" : "none" }} />
+                  </div>
+                </div>
+                {isOpen && (
+                  <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid #2B333B", paddingTop: 12 }}>
+                    {machines.map((m) => (
+                      <div key={m.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
+                        <span>{m.name} <span style={{ color: "#5B6672", fontFamily: F_MONO }}>{m.machineId}</span></span>
+                        <Badge color={STATUS_COLOR[m.status]}><Dot color={STATUS_COLOR[m.status]} />{m.status}</Badge>
+                      </div>
+                    ))}
+                    <button onClick={() => setTab("assets")} style={{ background: "none", border: "none", color: "#F5A623", fontSize: 11.5, cursor: "pointer", textAlign: "left", marginTop: 4 }}>Open in Assets →</button>
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------- Executive Dashboard ----------------------------- */
+
+function ExecutiveDashboard({ data, session }) {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const completedThisMonth = data.workOrders.filter((w) => (w.status === "Completed" || w.status === "Closed") && w.completedAt && new Date(w.completedAt) >= startOfMonth);
+  const downtimeThisMonth = completedThisMonth.reduce((sum, w) => sum + (w.startedAt && w.completedAt ? (new Date(w.completedAt) - new Date(w.startedAt)) / 3600000 : 0), 0);
+  const maintenanceCost = completedThisMonth.reduce((sum, w) => sum + (w.actualCost || 0), 0);
+  const approvedDecisions = data.decisions.filter((d) => d.status === "Approved");
+  const estimatedLossAvoided = approvedDecisions.reduce((sum, d) => sum + (d.downtimeCost || 0), 0);
+  const technicians = data.team.filter((t) => t.role === "Technician");
+  const avgJobsPerTech = technicians.length ? technicians.reduce((sum, t) => sum + technicianPerformance(t.name, data).completedJobs, 0) / technicians.length : 0;
+  const lowStockParts = data.parts.filter((p) => p.quantity <= p.minStock).length;
+  const mtbfValues = data.machines.map((m) => machineReliabilityStats(m.id, data).mtbf).filter((v) => v != null);
+  const avgMtbf = mtbfValues.length ? mtbfValues.reduce((a, b) => a + b, 0) / mtbfValues.length : null;
+  const mttrValues = data.machines.map((m) => machineReliabilityStats(m.id, data).mttrHours).filter((v) => v != null);
+  const avgMttr = mttrValues.length ? mttrValues.reduce((a, b) => a + b, 0) / mttrValues.length : null;
+
+  const stats = [
+    { label: "Downtime cost this month", value: fmtMoney(maintenanceCost), icon: Clock, color: "#E5484D" },
+    { label: "MTBF (fleet average)", value: avgMtbf != null ? `${avgMtbf.toFixed(0)}d` : "Not enough data yet", icon: TrendingUp, color: "#34D399" },
+    { label: "MTTR (fleet average)", value: avgMttr != null ? `${avgMttr.toFixed(1)}h` : "Not enough data yet", icon: Wrench, color: "#4C9FE5" },
+    { label: "Maintenance cost this month", value: fmtMoney(maintenanceCost), icon: FileText, color: "#A78BFA" },
+    { label: "AI recommendations approved", value: approvedDecisions.length, icon: CheckCheck, color: "#34D399" },
+    { label: "Est. production loss avoided", value: fmtMoney(estimatedLossAvoided), icon: ShieldAlert, color: "#F5A623" },
+    { label: "Avg jobs per technician", value: avgJobsPerTech.toFixed(1), icon: Hammer, color: "#4C9FE5" },
+    { label: "Parts needing attention", value: lowStockParts, icon: Package, color: lowStockParts > 0 ? "#E5484D" : "#34D399" },
+  ];
+
+  return (
+    <div>
+      <PageHeader title="Executive Dashboard" subtitle="The numbers a plant manager or executive checks every morning." />
+      <div style={{ fontSize: 11.5, color: "#5B6672", marginBottom: 16 }}>"Est. production loss avoided" is the sum of estimated downtime costs on recommendations that were approved — an estimate based on the Decision Center's own projections, not a verified measurement. MTBF/MTTR trend lines will appear once more history accumulates over time.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        {stats.map((s) => (
+          <Card key={s.label} style={{ padding: "15px 16px" }}>
+            <s.icon size={15} color={s.color} style={{ marginBottom: 8 }} />
+            <div style={{ fontFamily: F_MONO, fontSize: 17, fontWeight: 600 }}>{s.value}</div>
+            <div style={{ fontSize: 10.5, color: "#8A96A3", marginTop: 2 }}>{s.label}</div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------- AI Copilot ----------------------------- */
+
+function buildCopilotPrompt(data, question) {
+  const snapshot = {
+    machines: data.machines.map((m) => ({ name: m.name, machineId: m.machineId, status: m.status, criticality: m.criticality, location: m.location, nextMaintenance: m.nextMaintenance })),
+    openAlerts: data.alerts.filter((a) => !a.resolved).map((a) => ({ machine: data.machines.find((m) => m.id === a.machineId)?.name, type: a.type, severity: a.severity, date: a.date })),
+    pendingDecisions: data.decisions.filter((d) => d.status === "Pending").map((d) => ({ machine: data.machines.find((m) => m.id === d.machineId)?.name, action: d.action, risk: d.risk, downtimeCost: d.downtimeCost })),
+    openWorkOrders: data.workOrders.filter((w) => w.status !== "Completed" && w.status !== "Closed").map((w) => ({ woNumber: w.woNumber, machine: data.machines.find((m) => m.id === w.machineId)?.name, assignedTech: w.assignedTech, dueDate: w.dueDate, status: w.status })),
+    overdueWorkOrders: data.workOrders.filter((w) => isOverdue(w.dueDate, w.status)).map((w) => w.woNumber),
+    team: data.team.map((t) => ({ name: t.name, role: t.role })),
+  };
+  return `You are MEO's AI Copilot, answering a maintenance manager's question using ONLY the real data below. Never invent a machine, technician, or event not present here. If the data doesn't contain the answer, say so plainly instead of guessing.
+
+DATA:
+${JSON.stringify(snapshot, null, 2)}
+
+QUESTION: ${question}
+
+Answer in 2-4 concise sentences, plain text, no markdown formatting, grounded only in the data above.`;
+}
+
+function AiCopilot({ data }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [asking, setAsking] = useState(false);
+  const suggestions = ["Which machines need maintenance today?", "Show me all overdue work orders.", "What's our biggest risk right now?"];
+
+  async function ask(q) {
+    const question = (q || input).trim();
+    if (!question || asking) return;
+    setInput("");
+    setMessages((m) => [...m, { role: "user", text: question }]);
+    setAsking(true);
+    try {
+      const prompt = buildCopilotPrompt(data, question);
+      const res = await fetch("/api/generate-priorities", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Request failed");
+      setMessages((m) => [...m, { role: "assistant", text: (json.text || "").trim() }]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", text: `Couldn't get an answer: ${e.message || "unknown error"}` }]);
+    } finally { setAsking(false); }
+  }
+
+  return (
+    <div>
+      <PageHeader title="AI Copilot" subtitle="Ask about your real data instead of digging through pages." />
+      <Card style={{ padding: 20, minHeight: 360, display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12, marginBottom: 14 }}>
+          {messages.length === 0 && (
+            <div>
+              <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 10 }}>Try asking:</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {suggestions.map((s) => (
+                  <button key={s} onClick={() => ask(s)} style={{ textAlign: "left", background: "#12161A", border: "1px solid #2B333B", borderRadius: 7, padding: "9px 12px", color: "#C7CED5", fontSize: 12.5, cursor: "pointer" }}>{s}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          {messages.map((m, i) => (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", flexDirection: m.role === "user" ? "row-reverse" : "row" }}>
+              <div style={{ width: 26, height: 26, borderRadius: "50%", background: m.role === "user" ? "#232B33" : "#F5A6231A", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {m.role === "user" ? <span style={{ fontSize: 11 }}>You</span> : <Sparkles size={13} color="#F5A623" />}
+              </div>
+              <div style={{ background: m.role === "user" ? "#232B33" : "#12161A", borderRadius: 10, padding: "10px 13px", fontSize: 13, maxWidth: "80%", color: "#EAEEF1" }}>{m.text}</div>
+            </div>
+          ))}
+          {asking && <div style={{ fontSize: 12, color: "#8A96A3", display: "flex", alignItems: "center", gap: 6 }}><Loader2 size={13} style={{ animation: "meo-spin 1s linear infinite" }} /> Thinking…</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input style={{ ...inputStyle, flex: 1 }} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ask()} placeholder="Ask about your machines, alerts, or work orders…" />
+          <Button onClick={() => ask()} disabled={asking || !input.trim()}><Send size={14} /></Button>
+        </div>
+      </Card>
     </div>
   );
 }
