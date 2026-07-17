@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { storage, testStorageConnection } from "./storage.js";
+import { storage } from "./storage.js";
 import {
   Gauge, AlertTriangle, ClipboardList, Bell, BarChart3, LogOut, Plus, X,
   Clock, MapPin, Factory, Calendar, ChevronRight, CheckCircle2, TrendingUp,
@@ -158,7 +158,7 @@ function machineReliabilityStats(machineId, data) {
 function emptyData() {
   return {
     machines: [], alerts: [], decisions: [], workOrders: [], parts: [], team: [],
-    activity: [], aiRun: null, settings: { companyName: "", locations: [], assetTypes: [] },
+    activity: [], aiRun: null, settings: { companyName: "", locations: [], assetTypes: [], timezone: "Africa/Lagos" },
     woCounter: 0,
   };
 }
@@ -201,7 +201,7 @@ function seedData() {
     { id: uid("a"), text: "AI flagged Compressor A trip fault as High risk", at: iso(0.3) },
     { id: uid("a"), text: "Work order WO-0001 completed on Pump B", at: iso(6) },
   ];
-  return { machines, alerts, decisions, workOrders, parts, team, activity, aiRun: null, settings: { companyName: "Demo Plant", locations: ["Bay 1", "Bay 2", "Bay 3", "Utility Room"], assetTypes: ["Boiler", "Conveyor", "Compressor", "Pump"] }, woCounter: 1 };
+  return { machines, alerts, decisions, workOrders, parts, team, activity, aiRun: null, settings: { companyName: "Demo Plant", locations: ["Bay 1", "Bay 2", "Bay 3", "Utility Room"], assetTypes: ["Boiler", "Conveyor", "Compressor", "Pump"], timezone: "Africa/Lagos" }, woCounter: 1 };
 }
 
 /* ---------------------------- small primitives ---------------------------- */
@@ -270,15 +270,39 @@ function PageHeader({ title, subtitle, action }) {
 
 /* ---------------------------------- App ------------------------------------ */
 
+function loadRememberedSession() {
+  try {
+    const raw = window.localStorage.getItem("meo:remembered-session");
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+function saveRememberedSession(session) {
+  try { window.localStorage.setItem("meo:remembered-session", JSON.stringify(session)); } catch (e) { /* noop */ }
+}
+function clearRememberedSession() {
+  try { window.localStorage.removeItem("meo:remembered-session"); } catch (e) { /* noop */ }
+}
+
 export default function App() {
   useFonts();
-  const [entryChoice, setEntryChoice] = useState(null); // null | "demo" | "connect"
-  const [session, setSession] = useState(null);
+  const remembered = useState(() => loadRememberedSession())[0];
+  const [entryChoice, setEntryChoice] = useState(remembered ? (remembered.isDemo ? "demo" : "connect") : null); // null | "demo" | "connect"
+  const [session, setSession] = useState(remembered);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const saveTimer = useRef(null);
   const workspaceKey = session ? "meo:v2:" + session.workspace.trim().toLowerCase() : null;
+
+  function handleJoin(newSession) {
+    saveRememberedSession(newSession);
+    setSession(newSession);
+  }
+  function handleLeave() {
+    clearRememberedSession();
+    setSession(null);
+    setEntryChoice(null);
+  }
 
   useEffect(() => {
     if (!workspaceKey) return;
@@ -311,14 +335,14 @@ export default function App() {
   }, []);
 
   if (!entryChoice) return <WelcomeScreen onChoose={setEntryChoice} />;
-  if (!session) return <Login onJoin={setSession} isDemo={entryChoice === "demo"} onBack={() => setEntryChoice(null)} />;
+  if (!session) return <Login onJoin={handleJoin} isDemo={entryChoice === "demo"} onBack={() => setEntryChoice(null)} />;
   if (loading || !data) return <LoadingScreen />;
 
   const notifications = computeNotifications(data);
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#12161A", fontFamily: F_BODY, color: "#EAEEF1" }}>
-      <Sidebar tab={tab} setTab={setTab} session={session} onLeave={() => { setSession(null); setEntryChoice(null); }} notifCount={notifications.length} pendingDecisions={data.decisions.filter((d) => d.status === "Pending").length} />
+      <Sidebar tab={tab} setTab={setTab} session={session} onLeave={handleLeave} notifCount={notifications.length} pendingDecisions={data.decisions.filter((d) => d.status === "Pending").length} />
       <main style={{ flex: 1, minWidth: 0, padding: "28px 32px", maxWidth: 1220 }}>
         {session.isDemo && <DemoModeBanner />}
         {tab === "dashboard" && <Dashboard data={data} session={session} setTab={setTab} setData={setData} logActivity={logActivity} />}
@@ -545,7 +569,31 @@ function computeNotifications(data) {
 
 /* -------------------------------- Dashboard --------------------------------- */
 
-function greeting() { const h = new Date().getHours(); if (h < 12) return "morning"; if (h < 17) return "afternoon"; return "evening"; }
+function greeting(timezone) {
+  let h;
+  try {
+    h = timezone ? Number(new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", hour12: false }).format(new Date())) : new Date().getHours();
+  } catch (e) {
+    h = new Date().getHours();
+  }
+  if (h < 12) return "morning"; if (h < 17) return "afternoon"; return "evening";
+}
+
+const TIMEZONES = [
+  { label: "Nigeria (Lagos)", value: "Africa/Lagos" },
+  { label: "UK (London)", value: "Europe/London" },
+  { label: "USA — Eastern", value: "America/New_York" },
+  { label: "USA — Central", value: "America/Chicago" },
+  { label: "USA — Pacific", value: "America/Los_Angeles" },
+  { label: "South Africa (Johannesburg)", value: "Africa/Johannesburg" },
+  { label: "Kenya (Nairobi)", value: "Africa/Nairobi" },
+  { label: "Ghana (Accra)", value: "Africa/Accra" },
+  { label: "UAE (Dubai)", value: "Asia/Dubai" },
+  { label: "India (Delhi/Mumbai)", value: "Asia/Kolkata" },
+  { label: "Germany (Berlin)", value: "Europe/Berlin" },
+  { label: "China (Shanghai)", value: "Asia/Shanghai" },
+  { label: "Australia (Sydney)", value: "Australia/Sydney" },
+];
 
 function DashboardHeroDecision({ decision, machine, data, session, setData, logActivity, setTab }) {
   const [decideModal, setDecideModal] = useState(null);
@@ -660,7 +708,7 @@ function Dashboard({ data, session, setTab, setData, logActivity }) {
 
   return (
     <div>
-      <PageHeader title={`Good ${greeting()}, ${session.name.split(" ")[0]}`} subtitle="What needs a decision, why it matters, and what happens if you wait." />
+      <PageHeader title={`Good ${greeting(data.settings?.timezone)}, ${session.name.split(" ")[0]}`} subtitle="What needs a decision, why it matters, and what happens if you wait." />
 
       {!session.isDemo && data.machines.length === 0 && <ConnectPlantChecklist data={data} setTab={setTab} />}
 
@@ -891,6 +939,7 @@ function MachineModal({ machine, machines = [], onClose, onSave }) {
         </Field>
         <Field label="Status">
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{MACHINE_STATUSES.map((s) => <button key={s} onClick={() => setForm((f) => ({ ...f, status: s }))} style={{ flex: "1 1 40%", padding: "8px 4px", borderRadius: 6, cursor: "pointer", fontSize: 11.5, background: form.status === s ? STATUS_COLOR[s] + "1A" : "#12161A", color: form.status === s ? STATUS_COLOR[s] : "#8A96A3", border: "1px solid " + (form.status === s ? STATUS_COLOR[s] + "60" : "#2B333B") }}>{s}</button>)}</div>
+          <div style={{ fontSize: 10.5, color: "#5B6672", marginTop: 5 }}>Set this based on what you currently observe. MEO can't detect it automatically yet — that needs a real sensor physically connected to this machine (see Integration Center).</div>
         </Field>
         <Button style={{ justifyContent: "center", marginTop: 6 }} disabled={hasErrors}
           onClick={() => {
@@ -1987,27 +2036,25 @@ function AiCopilot({ data }) {
 
 function SettingsPage({ data, setData, session, logActivity }) {
   const [companyName, setCompanyName] = useState(data.settings?.companyName || "");
+  const [timezone, setTimezone] = useState(data.settings?.timezone || "Africa/Lagos");
+  const [companySaved, setCompanySaved] = useState(false);
   const [newLocation, setNewLocation] = useState("");
   const [newAssetType, setNewAssetType] = useState("");
   const [newMember, setNewMember] = useState({ name: "", role: "Technician", skills: "", shift: "Day", certifications: "", experienceYears: "" });
   const [confirmReset, setConfirmReset] = useState(false);
-  const [diagResult, setDiagResult] = useState(null);
-  const [diagRunning, setDiagRunning] = useState(false);
   const canEdit = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
 
-  async function runDiagnostic() {
-    setDiagRunning(true); setDiagResult(null);
-    const res = await testStorageConnection();
-    setDiagResult(res);
-    setDiagRunning(false);
-  }
-
   function resetWorkspace() {
-    setData(() => ({ machines: [], alerts: [], decisions: [], workOrders: [], parts: [], team: [], activity: [], aiRun: null, settings: { companyName: "", locations: [], assetTypes: [] }, woCounter: 0 }));
+    setData(() => ({ machines: [], alerts: [], decisions: [], workOrders: [], parts: [], team: [], activity: [], aiRun: null, settings: { companyName: "", locations: [], assetTypes: [], timezone: "Africa/Lagos" }, woCounter: 0 }));
     setConfirmReset(false);
   }
 
-  function saveCompany() { setData((d) => ({ ...d, settings: { ...d.settings, companyName } })); logActivity("Updated company name"); }
+  function saveCompany() {
+    setData((d) => ({ ...d, settings: { ...d.settings, companyName, timezone } }));
+    logActivity("Updated company settings");
+    setCompanySaved(true);
+    setTimeout(() => setCompanySaved(false), 2500);
+  }
   function addLocation() { if (!newLocation.trim()) return; setData((d) => ({ ...d, settings: { ...d.settings, locations: [...(d.settings.locations || []), newLocation.trim()] } })); setNewLocation(""); }
   function addAssetType() { if (!newAssetType.trim()) return; setData((d) => ({ ...d, settings: { ...d.settings, assetTypes: [...(d.settings.assetTypes || []), newAssetType.trim()] } })); setNewAssetType(""); }
   function addMember() { if (!newMember.name.trim()) return; setData((d) => ({ ...d, team: [...d.team, { id: uid("u"), ...newMember }] })); setNewMember({ name: "", role: "Technician", skills: "", shift: "Day", certifications: "", experienceYears: "" }); logActivity(`Added team member ${newMember.name} (${newMember.role})`); }
@@ -2019,9 +2066,19 @@ function SettingsPage({ data, setData, session, logActivity }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <Card style={{ padding: 20 }}>
           <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Company</div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input style={{ ...inputStyle, flex: 1 }} value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Company name" disabled={!canEdit} />
-            {canEdit && <Button variant="ghost" onClick={saveCompany}>Save</Button>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <input style={inputStyle} value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Company name" disabled={!canEdit} />
+            <Field label="Workspace timezone (used for greetings and dates)">
+              <select style={inputStyle} value={timezone} onChange={(e) => setTimezone(e.target.value)} disabled={!canEdit}>
+                {TIMEZONES.map((tz) => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
+              </select>
+            </Field>
+            {canEdit && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Button variant="ghost" onClick={saveCompany}>Save</Button>
+                {companySaved && <span style={{ fontSize: 12, color: "#34D399", display: "flex", alignItems: "center", gap: 5 }}><CheckCircle2 size={13} /> Saved</span>}
+              </div>
+            )}
           </div>
         </Card>
 
@@ -2109,24 +2166,6 @@ function SettingsPage({ data, setData, session, logActivity }) {
           <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Live sensor data</div>
           <div style={{ fontSize: 12, color: "#8A96A3" }}>Alerts already have a sensor-data field, ready for a live telemetry feed later. For now, log readings manually there when you report an alert.</div>
         </Card>
-
-        <Card style={{ padding: 20, gridColumn: "1 / -1" }}>
-          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Storage diagnostics</div>
-          <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 12 }}>Tests whether your data is actually saving to Supabase (shared, real) or just to this one browser (localStorage, not shared). Run this any time something looks like it isn't saving.</div>
-          <Button variant="ghost" onClick={runDiagnostic} disabled={diagRunning}>{diagRunning ? <Loader2 size={14} style={{ animation: "meo-spin 1s linear infinite" }} /> : <RefreshCw size={14} />} {diagRunning ? "Testing…" : "Run storage test"}</Button>
-          {diagResult && (
-            <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: diagResult.ok ? "#34D3991A" : "#E5484D1A", border: `1px solid ${diagResult.ok ? "#34D39940" : "#E5484D40"}` }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                {diagResult.ok ? <CheckCircle2 size={15} color="#34D399" /> : <AlertTriangle size={15} color="#E5484D" />}
-                <span style={{ fontWeight: 600, fontSize: 13, color: diagResult.ok ? "#34D399" : "#E5484D" }}>{diagResult.ok ? "Working" : "Not working"}</span>
-                <Badge color={diagResult.usingSupabase ? "#4C9FE5" : "#8A96A3"}>{diagResult.usingSupabase ? "Supabase" : "localStorage only"}</Badge>
-              </div>
-              <div style={{ fontSize: 12, color: "#C7CED5", fontFamily: F_MONO, lineHeight: 1.5 }}>{diagResult.message}</div>
-            </div>
-          )}
-        </Card>
-
-        <style>{`@keyframes meo-spin{to{transform:rotate(360deg)}}`}</style>
 
         <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
           <Card style={{ padding: 20, border: "1px solid #E5484D40" }}>
