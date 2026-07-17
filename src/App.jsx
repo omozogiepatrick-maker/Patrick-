@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { storage } from "./storage.js";
+import { storage, testStorageConnection } from "./storage.js";
 import {
   Gauge, AlertTriangle, ClipboardList, Bell, BarChart3, LogOut, Plus, X,
   Clock, MapPin, Factory, Calendar, ChevronRight, CheckCircle2, TrendingUp,
@@ -1991,7 +1991,16 @@ function SettingsPage({ data, setData, session, logActivity }) {
   const [newAssetType, setNewAssetType] = useState("");
   const [newMember, setNewMember] = useState({ name: "", role: "Technician", skills: "", shift: "Day", certifications: "", experienceYears: "" });
   const [confirmReset, setConfirmReset] = useState(false);
+  const [diagResult, setDiagResult] = useState(null);
+  const [diagRunning, setDiagRunning] = useState(false);
   const canEdit = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
+
+  async function runDiagnostic() {
+    setDiagRunning(true); setDiagResult(null);
+    const res = await testStorageConnection();
+    setDiagResult(res);
+    setDiagRunning(false);
+  }
 
   function resetWorkspace() {
     setData(() => ({ machines: [], alerts: [], decisions: [], workOrders: [], parts: [], team: [], activity: [], aiRun: null, settings: { companyName: "", locations: [], assetTypes: [] }, woCounter: 0 }));
@@ -2100,6 +2109,24 @@ function SettingsPage({ data, setData, session, logActivity }) {
           <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Live sensor data</div>
           <div style={{ fontSize: 12, color: "#8A96A3" }}>Alerts already have a sensor-data field, ready for a live telemetry feed later. For now, log readings manually there when you report an alert.</div>
         </Card>
+
+        <Card style={{ padding: 20, gridColumn: "1 / -1" }}>
+          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Storage diagnostics</div>
+          <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 12 }}>Tests whether your data is actually saving to Supabase (shared, real) or just to this one browser (localStorage, not shared). Run this any time something looks like it isn't saving.</div>
+          <Button variant="ghost" onClick={runDiagnostic} disabled={diagRunning}>{diagRunning ? <Loader2 size={14} style={{ animation: "meo-spin 1s linear infinite" }} /> : <RefreshCw size={14} />} {diagRunning ? "Testing…" : "Run storage test"}</Button>
+          {diagResult && (
+            <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: diagResult.ok ? "#34D3991A" : "#E5484D1A", border: `1px solid ${diagResult.ok ? "#34D39940" : "#E5484D40"}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                {diagResult.ok ? <CheckCircle2 size={15} color="#34D399" /> : <AlertTriangle size={15} color="#E5484D" />}
+                <span style={{ fontWeight: 600, fontSize: 13, color: diagResult.ok ? "#34D399" : "#E5484D" }}>{diagResult.ok ? "Working" : "Not working"}</span>
+                <Badge color={diagResult.usingSupabase ? "#4C9FE5" : "#8A96A3"}>{diagResult.usingSupabase ? "Supabase" : "localStorage only"}</Badge>
+              </div>
+              <div style={{ fontSize: 12, color: "#C7CED5", fontFamily: F_MONO, lineHeight: 1.5 }}>{diagResult.message}</div>
+            </div>
+          )}
+        </Card>
+
+        <style>{`@keyframes meo-spin{to{transform:rotate(360deg)}}`}</style>
 
         <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
           <Card style={{ padding: 20, border: "1px solid #E5484D40" }}>
