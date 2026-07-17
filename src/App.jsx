@@ -342,7 +342,7 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#12161A", fontFamily: F_BODY, color: "#EAEEF1" }}>
-      <Sidebar tab={tab} setTab={setTab} session={session} onLeave={handleLeave} notifCount={notifications.length} pendingDecisions={data.decisions.filter((d) => d.status === "Pending").length} />
+      <Sidebar tab={tab} setTab={setTab} session={session} onLeave={handleLeave} notifCount={notifications.length} pendingDecisions={data.decisions.filter((d) => d.status === "Pending").length} assistantName={data.settings?.assistantName} />
       <main style={{ flex: 1, minWidth: 0, padding: "28px 32px", maxWidth: 1220 }}>
         {session.isDemo && <DemoModeBanner />}
         {tab === "dashboard" && <Dashboard data={data} session={session} setTab={setTab} setData={setData} logActivity={logActivity} />}
@@ -493,7 +493,7 @@ function Login({ onJoin, isDemo, onBack }) {
 
 /* -------------------------------- Sidebar ---------------------------------- */
 
-function Sidebar({ tab, setTab, session, onLeave, notifCount, pendingDecisions }) {
+function Sidebar({ tab, setTab, session, onLeave, notifCount, pendingDecisions, assistantName }) {
   const items = [
     { id: "dashboard", label: "Dashboard", icon: Gauge },
     { id: "assets", label: "Assets", icon: Factory },
@@ -505,7 +505,7 @@ function Sidebar({ tab, setTab, session, onLeave, notifCount, pendingDecisions }
     { id: "fleet", label: "Fleet Health Map", icon: Map },
     { id: "livedata", label: "Live Data Monitor", icon: Radio },
     { id: "timeline", label: "Event Timeline", icon: GitBranch },
-    { id: "copilot", label: "AI Copilot", icon: MessageCircle },
+    { id: "copilot", label: assistantName ? `Ask ${assistantName}` : "AI Copilot", icon: MessageCircle },
     { id: "integrations", label: "Integration Center", icon: Plug },
     { id: "reports", label: "Reports", icon: BarChart3 },
     { id: "executive", label: "Executive Dashboard", icon: LineChart },
@@ -684,6 +684,78 @@ function ConnectPlantChecklist({ data, setTab }) {
   );
 }
 
+function AssistantBriefing({ data, session, setData, logActivity }) {
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState("");
+  const [localName, setLocalName] = useState("");
+  const assistantName = data.settings?.assistantName;
+  const automatic = !!data.settings?.automaticBriefings;
+  const briefing = data.settings?.assistantBriefing;
+  const stale = !briefing || (Date.now() - new Date(briefing.generatedAt).getTime()) > 4 * 3600000;
+  const triedAuto = useRef(false);
+
+  async function generateBriefing() {
+    setRunning(true); setError("");
+    try {
+      const prompt = buildBriefingPrompt(data, session);
+      const res = await fetch("/api/generate-priorities", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Request failed");
+      const text = (json.text || "").trim();
+      setData((d) => ({ ...d, settings: { ...d.settings, assistantBriefing: { text, generatedAt: new Date().toISOString() } } }));
+      logActivity(`${data.settings?.assistantName || "Assistant"} gave a briefing`);
+    } catch (e) {
+      setError(`Couldn't get a briefing: ${e.message || "unknown error"}`);
+    } finally { setRunning(false); }
+  }
+
+  useEffect(() => {
+    if (triedAuto.current) return;
+    if (automatic && assistantName && data.machines.length > 0 && stale && !running) {
+      triedAuto.current = true;
+      generateBriefing();
+    }
+  }, [automatic, assistantName, stale]);
+
+  function saveAssistantName() {
+    if (!localName.trim()) return;
+    setData((d) => ({ ...d, settings: { ...d.settings, assistantName: localName.trim() } }));
+  }
+
+  if (!assistantName) {
+    return (
+      <Card style={{ padding: 20, marginBottom: 22 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 15 }}><MessageCircle size={16} color="#F5A623" /> Name your AI Assistant</div>
+        <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 12 }}>Give it a name and it'll greet you here every time you log in, summarizing what actually needs attention — no clicking around required.</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input style={{ ...inputStyle, flex: 1 }} value={localName} onChange={(e) => setLocalName(e.target.value)} placeholder="e.g. James" />
+          <Button onClick={saveAssistantName} disabled={!localName.trim()}>Save name</Button>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card style={{ padding: 20, marginBottom: 22, background: "linear-gradient(180deg, #1B2127 0%, #191F25 100%)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14 }}>
+          <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#F5A6231A", display: "flex", alignItems: "center", justifyContent: "center" }}><Sparkles size={13} color="#F5A623" /></div>
+          {assistantName}
+        </div>
+        <button onClick={generateBriefing} disabled={running} style={{ background: "none", border: "none", color: "#8A96A3", fontSize: 11.5, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+          {running ? <Loader2 size={12} style={{ animation: "meo-spin 1s linear infinite" }} /> : <RefreshCw size={12} />} {briefing ? "Refresh" : "Get briefing"}
+        </button>
+      </div>
+      <style>{`@keyframes meo-spin{to{transform:rotate(360deg)}}`}</style>
+      {error && <div style={{ fontSize: 12.5, color: "#E5484D" }}>{error}</div>}
+      {running && !briefing && <div style={{ fontSize: 13, color: "#8A96A3", display: "flex", alignItems: "center", gap: 8 }}><Loader2 size={14} style={{ animation: "meo-spin 1s linear infinite" }} /> {assistantName} is looking things over…</div>}
+      {briefing && <div style={{ fontSize: 13.5, color: "#EAEEF1", lineHeight: 1.6 }}>{briefing.text}</div>}
+      {briefing && <div style={{ fontSize: 10.5, color: "#5B6672", marginTop: 8 }}>{relTime(briefing.generatedAt)}</div>}
+      {!briefing && !running && !error && <div style={{ fontSize: 13, color: "#8A96A3" }}>Tap "Get briefing" whenever you want {assistantName} to summarize what needs attention.</div>}
+    </Card>
+  );
+}
+
 function Dashboard({ data, session, setTab, setData, logActivity }) {
   const running = data.machines.filter((m) => m.status === "Running").length;
   const atRisk = data.machines.filter((m) => m.status === "At Risk").length;
@@ -711,6 +783,7 @@ function Dashboard({ data, session, setTab, setData, logActivity }) {
       <PageHeader title={`Good ${greeting(data.settings?.timezone)}, ${session.name.split(" ")[0]}`} subtitle="What needs a decision, why it matters, and what happens if you wait." />
 
       {!session.isDemo && data.machines.length === 0 && <ConnectPlantChecklist data={data} setTab={setTab} />}
+      <AssistantBriefing data={data} session={session} setData={setData} logActivity={logActivity} />
 
       {topDecision ? (
         <DashboardHeroDecision decision={topDecision} machine={topMachine} data={data} session={session} setData={setData} logActivity={logActivity} setTab={setTab} />
@@ -1956,16 +2029,21 @@ function ExecutiveDashboard({ data, session }) {
 
 /* ---------------------------- AI Copilot ----------------------------- */
 
-function buildCopilotPrompt(data, question) {
-  const snapshot = {
+function buildDataSnapshot(data) {
+  return {
     machines: data.machines.map((m) => ({ name: m.name, machineId: m.machineId, status: m.status, criticality: m.criticality, location: m.location, nextMaintenance: m.nextMaintenance })),
     openAlerts: data.alerts.filter((a) => !a.resolved).map((a) => ({ machine: data.machines.find((m) => m.id === a.machineId)?.name, type: a.type, severity: a.severity, date: a.date })),
-    pendingDecisions: data.decisions.filter((d) => d.status === "Pending").map((d) => ({ machine: data.machines.find((m) => m.id === d.machineId)?.name, action: d.action, risk: d.risk, downtimeCost: d.downtimeCost })),
+    pendingDecisions: data.decisions.filter((d) => d.status === "Pending").map((d) => ({ machine: data.machines.find((m) => m.id === d.machineId)?.name, action: d.action, risk: d.risk, downtimeCost: d.downtimeCost, recommendedTimeWindow: d.recommendedTimeWindow })),
     openWorkOrders: data.workOrders.filter((w) => w.status !== "Completed" && w.status !== "Closed").map((w) => ({ woNumber: w.woNumber, machine: data.machines.find((m) => m.id === w.machineId)?.name, assignedTech: w.assignedTech, dueDate: w.dueDate, status: w.status })),
     overdueWorkOrders: data.workOrders.filter((w) => isOverdue(w.dueDate, w.status)).map((w) => w.woNumber),
+    lowStockParts: data.parts.filter((p) => p.quantity <= p.minStock).map((p) => p.name),
     team: data.team.map((t) => ({ name: t.name, role: t.role })),
   };
-  return `You are MEO's AI Copilot, answering a maintenance manager's question using ONLY the real data below. Never invent a machine, technician, or event not present here. If the data doesn't contain the answer, say so plainly instead of guessing.
+}
+
+function buildCopilotPrompt(data, question, assistantName) {
+  const snapshot = buildDataSnapshot(data);
+  return `You are ${assistantName || "MEO's AI Copilot"}, answering a maintenance manager's question using ONLY the real data below. Never invent a machine, technician, or event not present here. If the data doesn't contain the answer, say so plainly instead of guessing.
 
 DATA:
 ${JSON.stringify(snapshot, null, 2)}
@@ -1975,10 +2053,25 @@ QUESTION: ${question}
 Answer in 2-4 concise sentences, plain text, no markdown formatting, grounded only in the data above.`;
 }
 
+function buildBriefingPrompt(data, session) {
+  const snapshot = buildDataSnapshot(data);
+  const assistantName = data.settings?.assistantName || "your assistant";
+  const firstName = session.name.split(" ")[0];
+  return `You are ${assistantName}, a maintenance manager's personal AI assistant inside MEO. Write a short spoken-style morning briefing addressed to ${firstName}, using ONLY the real data below. Never invent a machine, alert, or number not present here.
+
+Structure: a warm one-line greeting using their name, then 2-4 sentences covering what genuinely needs attention (pending decisions, overdue work, low stock parts, critical alerts) with real specifics (machine names, numbers) — or, if there's truly nothing notable, say so warmly and briefly instead of inventing a concern. End with one clear next step if there is one.
+
+DATA:
+${JSON.stringify(snapshot, null, 2)}
+
+Respond with ONLY the briefing text, plain sentences, no markdown, no headers, no bullet points — like something a helpful colleague would actually say out loud.`;
+}
+
 function AiCopilot({ data }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [asking, setAsking] = useState(false);
+  const assistantName = data.settings?.assistantName || "AI Copilot";
   const suggestions = ["Which machines need maintenance today?", "Show me all overdue work orders.", "What's our biggest risk right now?"];
 
   async function ask(q) {
@@ -1988,7 +2081,7 @@ function AiCopilot({ data }) {
     setMessages((m) => [...m, { role: "user", text: question }]);
     setAsking(true);
     try {
-      const prompt = buildCopilotPrompt(data, question);
+      const prompt = buildCopilotPrompt(data, question, assistantName);
       const res = await fetch("/api/generate-priorities", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Request failed");
@@ -2000,7 +2093,7 @@ function AiCopilot({ data }) {
 
   return (
     <div>
-      <PageHeader title="AI Copilot" subtitle="Ask about your real data instead of digging through pages." />
+      <PageHeader title={`Ask ${assistantName}`} subtitle="Ask about your real data instead of digging through pages." />
       <Card style={{ padding: 20, minHeight: 360, display: "flex", flexDirection: "column" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12, marginBottom: 14 }}>
           {messages.length === 0 && (
@@ -2038,6 +2131,9 @@ function SettingsPage({ data, setData, session, logActivity }) {
   const [companyName, setCompanyName] = useState(data.settings?.companyName || "");
   const [timezone, setTimezone] = useState(data.settings?.timezone || "Africa/Lagos");
   const [companySaved, setCompanySaved] = useState(false);
+  const [assistantName, setAssistantName] = useState(data.settings?.assistantName || "");
+  const [automaticBriefings, setAutomaticBriefings] = useState(!!data.settings?.automaticBriefings);
+  const [assistantSaved, setAssistantSaved] = useState(false);
   const [newLocation, setNewLocation] = useState("");
   const [newAssetType, setNewAssetType] = useState("");
   const [newMember, setNewMember] = useState({ name: "", role: "Technician", skills: "", shift: "Day", certifications: "", experienceYears: "" });
@@ -2054,6 +2150,12 @@ function SettingsPage({ data, setData, session, logActivity }) {
     logActivity("Updated company settings");
     setCompanySaved(true);
     setTimeout(() => setCompanySaved(false), 2500);
+  }
+  function saveAssistantSettings() {
+    setData((d) => ({ ...d, settings: { ...d.settings, assistantName: assistantName.trim(), automaticBriefings } }));
+    logActivity(`Updated AI Assistant settings`);
+    setAssistantSaved(true);
+    setTimeout(() => setAssistantSaved(false), 2500);
   }
   function addLocation() { if (!newLocation.trim()) return; setData((d) => ({ ...d, settings: { ...d.settings, locations: [...(d.settings.locations || []), newLocation.trim()] } })); setNewLocation(""); }
   function addAssetType() { if (!newAssetType.trim()) return; setData((d) => ({ ...d, settings: { ...d.settings, assetTypes: [...(d.settings.assetTypes || []), newAssetType.trim()] } })); setNewAssetType(""); }
@@ -2136,6 +2238,31 @@ function SettingsPage({ data, setData, session, logActivity }) {
           <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Asset types</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>{(data.settings.assetTypes || []).map((t, i) => <Badge key={i} color="#8A96A3">{t}</Badge>)}</div>
           {canEdit && <div style={{ display: "flex", gap: 6 }}><input style={{ ...inputStyle, flex: 1 }} value={newAssetType} onChange={(e) => setNewAssetType(e.target.value)} placeholder="Boiler" /><Button variant="ghost" onClick={addAssetType}><Plus size={14} /></Button></div>}
+        </Card>
+
+        <Card style={{ padding: 20 }}>
+          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 8 }}>AI Assistant</div>
+          <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 12 }}>Name your assistant and choose how it behaves when someone logs in.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <Field label="Assistant name">
+              <input style={inputStyle} value={assistantName} onChange={(e) => setAssistantName(e.target.value)} placeholder="e.g. James" disabled={!canEdit} />
+            </Field>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#12161A", borderRadius: 7, padding: "10px 12px" }}>
+              <div>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>Automatic briefings</div>
+                <div style={{ fontSize: 11, color: "#8A96A3" }}>When on, {assistantName || "your assistant"} greets you with a summary automatically on login (uses a small AI request each time).</div>
+              </div>
+              <button onClick={() => canEdit && setAutomaticBriefings((v) => !v)} style={{ width: 40, height: 22, borderRadius: 12, border: "none", background: automaticBriefings ? "#34D399" : "#2B333B", position: "relative", cursor: canEdit ? "pointer" : "default", flexShrink: 0 }}>
+                <span style={{ position: "absolute", top: 2, left: automaticBriefings ? 20 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .15s ease" }} />
+              </button>
+            </div>
+            {canEdit && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Button variant="ghost" onClick={saveAssistantSettings}>Save</Button>
+                {assistantSaved && <span style={{ fontSize: 12, color: "#34D399", display: "flex", alignItems: "center", gap: 5 }}><CheckCircle2 size={13} /> Saved</span>}
+              </div>
+            )}
+          </div>
         </Card>
 
         <Card style={{ padding: 20 }}>
