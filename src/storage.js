@@ -152,3 +152,33 @@ export const auth = supabase ? {
     return await supabase.auth.resetPasswordForEmail(email);
   },
 } : null;
+
+// Invite-only workspace membership. First person to sign up for a brand-new
+// workspace name becomes its owner automatically; after that, new sign-ups
+// must have their email added here first (done from Settings → Team).
+const MEMBERS_TABLE = "meo_workspace_members";
+
+export async function getWorkspaceMembers(workspaceKey) {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase.from(MEMBERS_TABLE).select("*").eq("workspace_key", workspaceKey);
+    if (error) return [];
+    return data || [];
+  } catch (e) { return []; }
+}
+
+export async function addWorkspaceMember(workspaceKey, email, role, invitedBy, isOwner = false) {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase.from(MEMBERS_TABLE).upsert({ workspace_key: workspaceKey, email: email.toLowerCase(), role, invited_by: invitedBy, is_owner: isOwner });
+    return !error;
+  } catch (e) { return false; }
+}
+
+export async function removeWorkspaceMember(workspaceKey, email) {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase.from(MEMBERS_TABLE).delete().eq("workspace_key", workspaceKey).eq("email", email.toLowerCase());
+    return !error;
+  } catch (e) { return false; }
+}
