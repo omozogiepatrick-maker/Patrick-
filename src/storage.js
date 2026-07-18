@@ -123,3 +123,32 @@ export async function testStorageConnection() {
     return { ok: false, usingSupabase: true, message: "UNEXPECTED ERROR — " + (e?.message || String(e)) };
   }
 }
+
+export const isSupabaseConfigured = !!supabase;
+
+// Real authentication, backed by Supabase Auth. Passwords are hashed and
+// verified by Supabase — this app never sees or stores a plain password.
+// When Supabase isn't configured, `auth` is null and App.jsx falls back to
+// the old prototype-style entry (no password) so the app stays usable.
+export const auth = supabase ? {
+  async signUp(email, password, metadata) {
+    return await supabase.auth.signUp({ email, password, options: { data: metadata } });
+  },
+  async signIn(email, password) {
+    return await supabase.auth.signInWithPassword({ email, password });
+  },
+  async signOut() {
+    return await supabase.auth.signOut();
+  },
+  async getSession() {
+    const { data } = await supabase.auth.getSession();
+    return data.session;
+  },
+  onAuthStateChange(callback) {
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+    return data.subscription;
+  },
+  async resetPasswordForEmail(email) {
+    return await supabase.auth.resetPasswordForEmail(email);
+  },
+} : null;
