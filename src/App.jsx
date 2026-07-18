@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { storage } from "./storage.js";
+import { storage, auth, isSupabaseConfigured, getWorkspaceMembers, addWorkspaceMember, removeWorkspaceMember } from "./storage.js";
 import {
   Gauge, AlertTriangle, ClipboardList, Bell, BarChart3, LogOut, Plus, X,
   Clock, MapPin, Factory, Calendar, ChevronRight, CheckCircle2, TrendingUp,
@@ -270,6 +270,9 @@ function PageHeader({ title, subtitle, action }) {
 
 /* ---------------------------------- App ------------------------------------ */
 
+// Fallback-only "remember me" for demo mode and for when Supabase isn't
+// configured yet — real accounts (below) don't need this, since Supabase
+// itself keeps a real, secure session automatically.
 function loadRememberedSession() {
   try {
     const raw = window.localStorage.getItem("meo:remembered-session");
@@ -282,24 +285,50 @@ function saveRememberedSession(session) {
 function clearRememberedSession() {
   try { window.localStorage.removeItem("meo:remembered-session"); } catch (e) { /* noop */ }
 }
+function sessionFromSupabaseUser(user) {
+  const meta = user.user_metadata || {};
+  return { workspace: meta.workspace || "", name: meta.name || user.email, role: meta.role || "Manager", isDemo: false, email: user.email };
+}
 
 export default function App() {
   useFonts();
   const remembered = useState(() => loadRememberedSession())[0];
   const [entryChoice, setEntryChoice] = useState(remembered ? (remembered.isDemo ? "demo" : "connect") : null); // null | "demo" | "connect"
   const [session, setSession] = useState(remembered);
+  const [checkingAuth, setCheckingAuth] = useState(isSupabaseConfigured);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("dashboard");
   const saveTimer = useRef(null);
   const workspaceKey = session ? "meo:v2:" + session.workspace.trim().toLowerCase() : null;
 
+  // Restore a real, secure Supabase session on load (this is what makes you
+  // stay signed in — not a localStorage trick). Demo sessions never touch
+  // Supabase Auth at all.
+  useEffect(() => {
+    if (!isSupabaseConfigured) { setCheckingAuth(false); return; }
+    let sub;
+    (async () => {
+      const existing = await auth.getSession();
+      if (existing?.user) {
+        setSession(sessionFromSupabaseUser(existing.user));
+        setEntryChoice("connect");
+      }
+      setCheckingAuth(false);
+      sub = auth.onAuthStateChange((s) => {
+        if (!s) { setSession((prev) => (prev?.isDemo ? prev : null)); }
+      });
+    })();
+    return () => sub?.unsubscribe?.();
+  }, []);
+
   function handleJoin(newSession) {
-    saveRememberedSession(newSession);
+    if (newSession.isDemo || !isSupabaseConfigured) saveRememberedSession(newSession);
     setSession(newSession);
   }
-  function handleLeave() {
+  async function handleLeave() {
     clearRememberedSession();
+    if (isSupabaseConfigured && session && !session.isDemo) { try { await auth.signOut(); } catch (e) { /* noop */ } }
     setSession(null);
     setEntryChoice(null);
   }
@@ -334,8 +363,12 @@ export default function App() {
     setData((d) => ({ ...d, activity: [{ id: uid("a"), text, at: new Date().toISOString() }, ...d.activity].slice(0, 60) }));
   }, []);
 
+  if (checkingAuth) return <LoadingScreen />;
   if (!entryChoice) return <WelcomeScreen onChoose={setEntryChoice} />;
-  if (!session) return <Login onJoin={handleJoin} isDemo={entryChoice === "demo"} onBack={() => setEntryChoice(null)} />;
+  if (!session) {
+    if (entryChoice === "connect" && isSupabaseConfigured) return <AuthScreen onJoin={handleJoin} onBack={() => setEntryChoice(null)} />;
+    return <Login onJoin={handleJoin} isDemo={entryChoice === "demo"} onBack={() => setEntryChoice(null)} />;
+  }
   if (loading || !data) return <LoadingScreen />;
 
   const notifications = computeNotifications(data);
@@ -488,6 +521,122 @@ function Login({ onJoin, isDemo, onBack }) {
       </div>
     </div>
 
+  );
+}
+
+function AuthScreen({ onJoin, onBack }) {
+  useFonts();
+  const [mode, setMode] = useState("signup"); // "signup" | "signin"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [workspace, setWorkspace] = useState("");
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("Manager");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+
+  async function handleSignUp() {
+    setError(""); setInfo("");
+    if (!workspace.trim() || !name.trim() || !email.trim()) { setError("Fill in every field."); return; }
+    if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (password !== confirmPassword) { setError("Passwords don't match."); return; }
+    setLoading(true);
+    const workspaceKey = "meo:v2:" + workspace.trim().toLowerCase();
+    const existingMembers = await getWorkspaceMembers(workspaceKey);
+    const isNewWorkspace = existingMembers.length === 0;
+    if (!isNewWorkspace) {
+      const invited = existingMembers.some((m) => m.email.toLowerCase() === email.trim().toLowerCase());
+      if (!invited) {
+        setLoading(false);
+        setError("This workspace already has a team — you need to be invited first. Ask your manager to add your email in Settings → Team, then try again.");
+        return;
+      }
+    }
+    const { data, error: err } = await auth.signUp(email.trim(), password, { workspace: workspace.trim(), name: name.trim(), role });
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    await addWorkspaceMember(workspaceKey, email.trim(), role, isNewWorkspace ? "self" : "invited", isNewWorkspace);
+    if (data.session) {
+      onJoin({ workspace: workspace.trim(), name: name.trim(), role, isDemo: false, email: email.trim() });
+    } else {
+      setInfo("Account created — check your email to confirm it, then sign in below.");
+      setMode("signin");
+    }
+  }
+
+  async function handleSignIn() {
+    setError(""); setInfo("");
+    if (!email.trim() || !password) { setError("Enter your email and password."); return; }
+    setLoading(true);
+    const { data, error: err } = await auth.signIn(email.trim(), password);
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    const meta = data.user?.user_metadata || {};
+    onJoin({ workspace: meta.workspace || "", name: meta.name || email.trim(), role: meta.role || "Manager", isDemo: false, email: email.trim() });
+  }
+
+  async function handleForgotPassword() {
+    setError(""); setInfo("");
+    if (!email.trim()) { setError("Enter your email above first, then tap this again."); return; }
+    setLoading(true);
+    const { error: err } = await auth.resetPasswordForEmail(email.trim());
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    setInfo("If that email has an account, a reset link is on its way.");
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#12161A", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F_BODY, color: "#EAEEF1", padding: 20 }}>
+      <div style={{ width: 440, maxWidth: "100%" }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: "#8A96A3", fontSize: 12, cursor: "pointer", marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>← Back</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 8, background: "#F5A623", display: "flex", alignItems: "center", justifyContent: "center" }}><Gauge size={19} color="#14181C" /></div>
+          <div><div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 18 }}>MEO</div><div style={{ fontSize: 11, color: "#8A96A3", fontFamily: F_MONO, letterSpacing: 0.4 }}>MAINTENANCE EXECUTION OS</div></div>
+        </div>
+
+        <Card style={{ padding: 24 }}>
+          <div style={{ display: "flex", gap: 4, marginBottom: 18, background: "#12161A", borderRadius: 8, padding: 3 }}>
+            <button onClick={() => { setMode("signup"); setError(""); setInfo(""); }} style={{ flex: 1, padding: "8px 0", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, background: mode === "signup" ? "#232B33" : "transparent", color: mode === "signup" ? "#EAEEF1" : "#8A96A3" }}>Sign Up</button>
+            <button onClick={() => { setMode("signin"); setError(""); setInfo(""); }} style={{ flex: 1, padding: "8px 0", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, background: mode === "signin" ? "#232B33" : "transparent", color: mode === "signin" ? "#EAEEF1" : "#8A96A3" }}>Sign In</button>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <Field label="Email"><input type="email" style={inputStyle} placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
+            <Field label="Password"><input type="password" style={inputStyle} placeholder={mode === "signup" ? "At least 6 characters" : "Your password"} value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+
+            {mode === "signup" && (
+              <>
+                <Field label="Confirm password"><input type="password" style={inputStyle} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} /></Field>
+                <Field label="Company workspace"><input style={inputStyle} placeholder="e.g. northgate-plant-2" value={workspace} onChange={(e) => setWorkspace(e.target.value)} /></Field>
+                <Field label="Your name"><input style={inputStyle} placeholder="e.g. J. Alvarez" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+                <Field label="Your role">
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {ROLES.map((r) => (
+                      <button key={r} onClick={() => setRole(r)} style={{ flex: "1 1 40%", padding: "8px 6px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, background: role === r ? "#F5A6231A" : "#12161A", color: role === r ? "#F5A623" : "#8A96A3", border: "1px solid " + (role === r ? "#F5A62360" : "#2B333B") }}>{r}</button>
+                    ))}
+                  </div>
+                </Field>
+              </>
+            )}
+
+            {error && <div style={{ fontSize: 12.5, color: "#E5484D" }}>{error}</div>}
+            {info && <div style={{ fontSize: 12.5, color: "#34D399" }}>{info}</div>}
+
+            <Button disabled={loading} onClick={mode === "signup" ? handleSignUp : handleSignIn} style={{ justifyContent: "center", marginTop: 4 }}>
+              {loading ? <Loader2 size={15} style={{ animation: "meo-spin 1s linear infinite" }} /> : <ChevronRight size={15} />} {loading ? "Please wait…" : mode === "signup" ? "Create account" : "Sign in"}
+            </Button>
+            <style>{`@keyframes meo-spin{to{transform:rotate(360deg)}}`}</style>
+
+            {mode === "signin" && (
+              <button onClick={handleForgotPassword} style={{ background: "none", border: "none", color: "#8A96A3", fontSize: 12, cursor: "pointer", textAlign: "center" }}>Forgot password?</button>
+            )}
+          </div>
+        </Card>
+        <div style={{ textAlign: "center", fontSize: 11.5, color: "#5B6672", marginTop: 14 }}>Real accounts, real passwords — handled securely by Supabase. Your team joins the same workspace by using the same workspace name at sign up.</div>
+      </div>
+    </div>
   );
 }
 
@@ -2138,7 +2287,41 @@ function SettingsPage({ data, setData, session, logActivity }) {
   const [newAssetType, setNewAssetType] = useState("");
   const [newMember, setNewMember] = useState({ name: "", role: "Technician", skills: "", shift: "Day", certifications: "", experienceYears: "" });
   const [confirmReset, setConfirmReset] = useState(false);
+  const [members, setMembers] = useState([]);
+  const [newInviteEmail, setNewInviteEmail] = useState("");
+  const [newInviteRole, setNewInviteRole] = useState("Technician");
+  const [inviteError, setInviteError] = useState("");
   const canEdit = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
+  const workspaceKey = "meo:v2:" + (session.workspace || "").trim().toLowerCase();
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || session.isDemo) return;
+    (async () => {
+      const list = await getWorkspaceMembers(workspaceKey);
+      // Self-healing: if this signed-in account predates the invite system,
+      // register them now so the workspace's member list stays accurate.
+      if (session.email && !list.some((m) => m.email.toLowerCase() === session.email.toLowerCase())) {
+        await addWorkspaceMember(workspaceKey, session.email, session.role, "self", list.length === 0);
+        setMembers(await getWorkspaceMembers(workspaceKey));
+      } else {
+        setMembers(list);
+      }
+    })();
+  }, [workspaceKey]);
+
+  async function inviteTeammate() {
+    setInviteError("");
+    if (!newInviteEmail.trim()) return;
+    const ok = await addWorkspaceMember(workspaceKey, newInviteEmail.trim(), newInviteRole, session.email || session.name, false);
+    if (!ok) { setInviteError("Couldn't save the invite — try again."); return; }
+    setMembers(await getWorkspaceMembers(workspaceKey));
+    logActivity(`Invited ${newInviteEmail.trim()} to the workspace`);
+    setNewInviteEmail("");
+  }
+  async function revokeInvite(email) {
+    await removeWorkspaceMember(workspaceKey, email);
+    setMembers(await getWorkspaceMembers(workspaceKey));
+  }
 
   function resetWorkspace() {
     setData(() => ({ machines: [], alerts: [], decisions: [], workOrders: [], parts: [], team: [], activity: [], aiRun: null, settings: { companyName: "", locations: [], assetTypes: [], timezone: "Africa/Lagos" }, woCounter: 0 }));
@@ -2227,6 +2410,33 @@ function SettingsPage({ data, setData, session, logActivity }) {
             </div>
           )}
         </Card>
+
+        {isSupabaseConfigured && !session.isDemo && (
+          <Card style={{ padding: 20, gridColumn: "1 / -1" }}>
+            <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Invite teammates (login access)</div>
+            <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 12 }}>This workspace is invite-only — add an email here before that person can sign up and join. This is separate from the technician roster above.</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+              {members.map((m) => (
+                <div key={m.email} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "6px 0", borderBottom: "1px solid #2B333B" }}>
+                  <span>{m.email} <span style={{ color: "#8A96A3" }}>· {m.role}</span> {m.is_owner && <Badge color="#F5A623">Owner</Badge>}</span>
+                  {canEdit && !m.is_owner && <button onClick={() => revokeInvite(m.email)} style={{ background: "none", border: "none", color: "#E5484D", cursor: "pointer", fontSize: 11.5 }}>Remove</button>}
+                </div>
+              ))}
+              {members.length === 0 && <div style={{ fontSize: 12, color: "#5B6672" }}>No one registered yet.</div>}
+            </div>
+            {canEdit && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input style={{ ...inputStyle, flex: 1 }} value={newInviteEmail} onChange={(e) => setNewInviteEmail(e.target.value)} placeholder="teammate@company.com" />
+                  <select style={inputStyle} value={newInviteRole} onChange={(e) => setNewInviteRole(e.target.value)}>{ROLES.map((r) => <option key={r} value={r}>{r}</option>)}</select>
+                  <Button variant="ghost" onClick={inviteTeammate}><Plus size={14} /></Button>
+                </div>
+                {inviteError && <div style={{ fontSize: 12, color: "#E5484D" }}>{inviteError}</div>}
+                <div style={{ fontSize: 11, color: "#5B6672" }}>They'll be able to sign up at your MEO link using this exact email — tell them the workspace name too.</div>
+              </div>
+            )}
+          </Card>
+        )}
 
         <Card style={{ padding: 20 }}>
           <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 12 }}>Locations</div>
