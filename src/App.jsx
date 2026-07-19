@@ -302,6 +302,18 @@ export default function App() {
   const saveTimer = useRef(null);
   const workspaceKey = session ? "meo:v2:" + session.workspace.trim().toLowerCase() : null;
 
+  // Detect that this page load IS the result of clicking a confirmation or
+  // password-reset link, before Supabase's client clears it from the URL.
+  const [redirectType] = useState(() => {
+    try {
+      const hash = window.location.hash || "";
+      if (hash.includes("type=signup") || hash.includes("type=invite")) return "confirmed";
+      if (hash.includes("type=recovery")) return "recovery";
+      return null;
+    } catch (e) { return null; }
+  });
+  const [showConfirmedScreen, setShowConfirmedScreen] = useState(redirectType === "confirmed");
+
   // Restore a real, secure Supabase session on load (this is what makes you
   // stay signed in — not a localStorage trick). Demo sessions never touch
   // Supabase Auth at all.
@@ -312,8 +324,9 @@ export default function App() {
       const existing = await auth.getSession();
       if (existing?.user) {
         setSession(sessionFromSupabaseUser(existing.user));
-        setEntryChoice("connect");
+        if (redirectType !== "confirmed") setEntryChoice("connect");
       }
+      try { window.history.replaceState(null, "", window.location.pathname); } catch (e) { /* noop */ }
       setCheckingAuth(false);
       sub = auth.onAuthStateChange((s) => {
         if (!s) { setSession((prev) => (prev?.isDemo ? prev : null)); }
@@ -364,6 +377,9 @@ export default function App() {
   }, []);
 
   if (checkingAuth) return <LoadingScreen />;
+  if (showConfirmedScreen && session) {
+    return <EmailConfirmedScreen name={session.name} onContinue={() => { setShowConfirmedScreen(false); setEntryChoice("connect"); }} />;
+  }
   if (!entryChoice) return <WelcomeScreen onChoose={setEntryChoice} />;
   if (!session) {
     if (entryChoice === "connect" && isSupabaseConfigured) return <AuthScreen onJoin={handleJoin} onBack={() => setEntryChoice(null)} />;
@@ -404,6 +420,26 @@ function LoadingScreen() {
     <div style={{ minHeight: "100vh", background: "#12161A", display: "flex", alignItems: "center", justifyContent: "center", color: "#8A96A3" }}>
       <Loader2 size={22} style={{ marginRight: 10, animation: "meo-spin 1s linear infinite" }} /> Loading workspace…
       <style>{`@keyframes meo-spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+
+function EmailConfirmedScreen({ name, onContinue }) {
+  useFonts();
+  return (
+    <div style={{ minHeight: "100vh", background: "#12161A", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: F_BODY, color: "#EAEEF1", padding: 20 }}>
+      <div style={{ width: 420, maxWidth: "100%", textAlign: "center" }}>
+        <div style={{ width: 60, height: 60, borderRadius: "50%", background: "#34D3991A", border: "2px solid #34D39960", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
+          <CheckCircle2 size={30} color="#34D399" />
+        </div>
+        <div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 22, marginBottom: 8 }}>Email confirmed</div>
+        <div style={{ fontSize: 13.5, color: "#8A96A3", marginBottom: 24, lineHeight: 1.6 }}>
+          You're all set{name ? `, ${name.split(" ")[0]}` : ""} — your account is verified and you're signed in. Your workspace and everything in it is ready whenever you are.
+        </div>
+        <Button onClick={onContinue} style={{ justifyContent: "center", width: "100%" }}>
+          Continue to MEO <ChevronRight size={15} />
+        </Button>
+      </div>
     </div>
   );
 }
