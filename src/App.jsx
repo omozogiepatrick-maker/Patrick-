@@ -566,7 +566,7 @@ function Login({ onJoin, isDemo, onBack }) {
         {!isDemo && (
           <>
             <div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 21, lineHeight: 1.35, marginBottom: 10 }}>Turn maintenance insights into fast, coordinated action before downtime happens.</div>
-            <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 18, lineHeight: 1.5 }}>MEO helps maintenance teams prioritize, decide, and execute the right maintenance actions — the coordination layer between what your systems detect and what your team actually does about it.</div>
+            <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 18, lineHeight: 1.5 }}>MEO helps maintenance teams prioritize, decide, and execute the right maintenance actions — the coordination layer between what your systems detect (predictive maintenance platforms, sensors, and more — too many to list individually) and what your team actually does about it.</div>
             <Card style={{ padding: 16, marginBottom: 18 }}>
               <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, marginBottom: 10 }}>How it works</div>
               <WorkflowDiagram />
