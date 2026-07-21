@@ -299,6 +299,7 @@ export default function App() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("dashboard");
+  const [tour, setTour] = useState({ active: false, step: 0 });
   const saveTimer = useRef(null);
   const workspaceKey = session ? "meo:v2:" + session.workspace.trim().toLowerCase() : null;
 
@@ -389,11 +390,20 @@ export default function App() {
 
   const notifications = computeNotifications(data);
 
+  function startTour() { setTour({ active: true, step: 0 }); setTab(TOUR_STEPS[0].tab); }
+  function tourNext() {
+    const next = tour.step + 1;
+    if (next >= TOUR_STEPS.length) { setTour({ active: false, step: 0 }); return; }
+    setTour({ active: true, step: next });
+    setTab(TOUR_STEPS[next].tab);
+  }
+  function tourSkip() { setTour({ active: false, step: 0 }); }
+
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#12161A", fontFamily: F_BODY, color: "#EAEEF1" }}>
       <Sidebar tab={tab} setTab={setTab} session={session} onLeave={handleLeave} notifCount={notifications.length} pendingDecisions={data.decisions.filter((d) => d.status === "Pending").length} assistantName={data.settings?.assistantName} />
-      <main style={{ flex: 1, minWidth: 0, padding: "28px 32px", maxWidth: 1220 }}>
-        {session.isDemo && <DemoModeBanner />}
+      <main style={{ flex: 1, minWidth: 0, padding: "28px 32px", maxWidth: 1220, paddingBottom: tour.active ? 140 : 32 }}>
+        {session.isDemo && <DemoModeBanner onStartTour={!tour.active ? startTour : null} />}
         {tab === "dashboard" && <Dashboard data={data} session={session} setTab={setTab} setData={setData} logActivity={logActivity} />}
         {tab === "assets" && <Assets data={data} setData={setData} session={session} logActivity={logActivity} />}
         {tab === "alerts" && <Alerts data={data} setData={setData} session={session} logActivity={logActivity} />}
@@ -411,6 +421,7 @@ export default function App() {
         {tab === "copilot" && <AiCopilot data={data} />}
         {tab === "settings" && <SettingsPage data={data} setData={setData} session={session} logActivity={logActivity} />}
       </main>
+      {tour.active && <TourOverlay step={tour.step} onNext={tourNext} onSkip={tourSkip} />}
     </div>
   );
 }
@@ -482,10 +493,42 @@ function WelcomeScreen({ onChoose }) {
   );
 }
 
-function DemoModeBanner() {
+function DemoModeBanner({ onStartTour }) {
   return (
-    <div style={{ background: "#F5A6231A", border: "1px solid #F5A62340", borderRadius: 8, padding: "9px 14px", marginBottom: 18, display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#F5A623", fontWeight: 600 }}>
-      <Sparkles size={14} /> Demo Mode — everything here is sample data, not live production data.
+    <div style={{ background: "#F5A6231A", border: "1px solid #F5A62340", borderRadius: 8, padding: "9px 14px", marginBottom: 18, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 12.5, color: "#F5A623", fontWeight: 600, flexWrap: "wrap" }}>
+      <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Sparkles size={14} /> Demo Mode — everything here is sample data, not live production data.</span>
+      {onStartTour && <button onClick={onStartTour} style={{ background: "#F5A623", color: "#14181C", border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>▶ Take the 2-minute tour</button>}
+    </div>
+  );
+}
+
+const TOUR_STEPS = [
+  { tab: "dashboard", title: "Step 1 — Your morning briefing", text: "This is what a manager sees first: the AI assistant already looked at everything and told you what needs attention — no clicking around required." },
+  { tab: "decisions", title: "Step 2 — The full picture", text: "Risk, cost if you wait, why it matters, and whether a technician and part are ready right now — everything needed to make the call, in one place." },
+  { tab: "decisions", title: "Step 3 — Make the call", text: "Try tapping Approve on the top recommendation. That single tap is about to do real work for you." },
+  { tab: "workorders", title: "Step 4 — It's already assigned", text: "That approval just created a real work order automatically — no extra typing, no second system to update." },
+  { tab: "technicians", title: "Step 5 — What the technician sees", text: "Clear instructions, a Start Work button, a Complete Work button. No guessing what to do." },
+  { tab: "dashboard", title: "That's the whole story", text: "Something needs attention → MEO tells you why → you approve it → it becomes a real job. Everything else in MEO supports this one loop." },
+];
+
+function TourOverlay({ step, onNext, onSkip }) {
+  const isLast = step === TOUR_STEPS.length - 1;
+  const s = TOUR_STEPS[step];
+  return (
+    <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 200, display: "flex", justifyContent: "center", padding: 16 }}>
+      <div style={{ width: 480, maxWidth: "100%", background: "#1B2127", border: "1px solid #F5A62360", borderRadius: 12, padding: 18, boxShadow: "0 10px 40px #000000AA" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 10 }}>
+          <div style={{ display: "flex", gap: 5 }}>
+            {TOUR_STEPS.map((_, i) => <span key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: i === step ? "#F5A623" : "#2B333B" }} />)}
+          </div>
+          <button onClick={onSkip} style={{ background: "none", border: "none", color: "#8A96A3", fontSize: 11.5, cursor: "pointer" }}>Skip tour</button>
+        </div>
+        <div style={{ fontFamily: F_DISPLAY, fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{s.title}</div>
+        <div style={{ fontSize: 13, color: "#C7CED5", marginBottom: 14, lineHeight: 1.5 }}>{s.text}</div>
+        <Button onClick={onNext} style={{ justifyContent: "center", width: "100%" }}>
+          {isLast ? "Finish" : "Next"} {!isLast && <ChevronRight size={15} />}
+        </Button>
+      </div>
     </div>
   );
 }
