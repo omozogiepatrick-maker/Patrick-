@@ -2039,7 +2039,7 @@ function IntegrationCenter({ data }) {
   ];
   const internal = [
     { name: "MEO Decision Engine (Claude)", status: "Active", lastSync: data.aiRun?.generatedAt || null, assets: data.machines.length, errors: "None" },
-    { name: "REST API (internal)", status: "Active", lastSync: new Date().toISOString(), assets: data.machines.length, errors: "None" },
+    { name: "Webhook Gate", status: data.settings?.webhookApiKey ? "Active" : "Not set up", lastSync: null, assets: data.machines.length, errors: "None", note: data.settings?.webhookApiKey ? "Ready to receive real data — set up in Settings" : "Generate a key in Settings to activate" },
   ];
   return (
     <div>
@@ -2049,12 +2049,13 @@ function IntegrationCenter({ data }) {
           <Card key={it.name} style={{ padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontWeight: 600, fontSize: 13.5 }}>{it.name}</div>
-              <Badge color="#34D399"><Dot color="#34D399" />{it.status}</Badge>
+              <Badge color={it.status === "Active" ? "#34D399" : "#8A96A3"}><Dot color={it.status === "Active" ? "#34D399" : "#5B6672"} />{it.status}</Badge>
             </div>
             <div style={{ fontSize: 11.5, color: "#8A96A3", display: "flex", flexDirection: "column", gap: 2 }}>
               <span>Last sync: {it.lastSync ? relTime(it.lastSync) : "never"}</span>
               <span>Assets covered: {it.assets}</span>
               <span>Errors: {it.errors}</span>
+              {it.note && <span style={{ color: "#F5A623", marginTop: 2 }}>{it.note}</span>}
             </div>
           </Card>
         ))}
@@ -2370,8 +2371,16 @@ function SettingsPage({ data, setData, session, logActivity }) {
   const [newInviteEmail, setNewInviteEmail] = useState("");
   const [newInviteRole, setNewInviteRole] = useState("Technician");
   const [inviteError, setInviteError] = useState("");
+  const [webhookKeyCopied, setWebhookKeyCopied] = useState(false);
   const canEdit = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
   const workspaceKey = "meo:v2:" + (session.workspace || "").trim().toLowerCase();
+  const webhookUrl = typeof window !== "undefined" ? `${window.location.origin}/api/ingest` : "/api/ingest";
+
+  function generateWebhookKey() {
+    const key = "meo_" + Array.from({ length: 24 }, () => "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[Math.floor(Math.random() * 62)]).join("");
+    setData((d) => ({ ...d, settings: { ...d.settings, webhookApiKey: key } }));
+    logActivity("Generated a new webhook API key");
+  }
 
   useEffect(() => {
     if (!isSupabaseConfigured || session.isDemo) return;
@@ -2578,9 +2587,40 @@ function SettingsPage({ data, setData, session, logActivity }) {
           </div>
         </Card>
 
-        <Card style={{ padding: 20 }}>
-          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Live sensor data</div>
-          <div style={{ fontSize: 12, color: "#8A96A3" }}>Alerts already have a sensor-data field, ready for a live telemetry feed later. For now, log readings manually there when you report an alert.</div>
+        <Card style={{ padding: 20, gridColumn: "1 / -1" }}>
+          <div style={{ fontFamily: F_DISPLAY, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Connect an external system (webhook)</div>
+          <div style={{ fontSize: 12, color: "#8A96A3", marginBottom: 14 }}>This is a real, working connection point — any predictive maintenance platform, IoT gateway, or automation tool (like Zapier) that can send data to a web address can push real alerts straight into this workspace.</div>
+
+          {!data.settings?.webhookApiKey ? (
+            <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
+              <Button variant="ghost" onClick={generateWebhookKey}>Generate webhook API key</Button>
+            </RoleGate>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", marginBottom: 4 }}>Webhook URL</div>
+                <div style={{ fontFamily: F_MONO, fontSize: 12, background: "#12161A", padding: "8px 10px", borderRadius: 6, wordBreak: "break-all" }}>{webhookUrl}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", marginBottom: 4 }}>API key</div>
+                <div style={{ fontFamily: F_MONO, fontSize: 12, background: "#12161A", padding: "8px 10px", borderRadius: 6, wordBreak: "break-all" }}>{data.settings.webhookApiKey}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10.5, color: "#8A96A3", textTransform: "uppercase", marginBottom: 4 }}>Example — what the external system should send (POST, JSON body)</div>
+                <pre style={{ fontFamily: F_MONO, fontSize: 11, background: "#12161A", padding: 10, borderRadius: 6, overflowX: "auto", margin: 0 }}>{`{
+  "workspace": "${session.workspace}",
+  "apiKey": "${data.settings.webhookApiKey}",
+  "machineId": "BLR-001",
+  "type": "Overheating",
+  "severity": "High",
+  "description": "Temperature 12% above normal",
+  "sensorNote": "94°C, rising"
+}`}</pre>
+              </div>
+              <div style={{ fontSize: 11, color: "#5B6672" }}>"machineId" must exactly match a machine already registered in Assets. Give this URL, key, and format to whoever manages your predictive maintenance system or IoT gateway.</div>
+              {canEdit && <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}><Button variant="danger" onClick={generateWebhookKey}>Regenerate key (invalidates the old one)</Button></RoleGate>}
+            </div>
+          )}
         </Card>
 
         <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
