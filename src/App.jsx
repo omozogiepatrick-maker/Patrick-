@@ -2378,8 +2378,11 @@ function SettingsPage({ data, setData, session, logActivity }) {
 
   function generateWebhookKey() {
     const key = "meo_" + Array.from({ length: 24 }, () => "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[Math.floor(Math.random() * 62)]).join("");
-    setData((d) => ({ ...d, settings: { ...d.settings, webhookApiKey: key } }));
+    setData((d) => ({ ...d, settings: { ...d.settings, webhookApiKey: key, autoDecideOnWebhookAlert: d.settings?.autoDecideOnWebhookAlert ?? true } }));
     logActivity("Generated a new webhook API key");
+  }
+  function toggleAutoDecide() {
+    setData((d) => ({ ...d, settings: { ...d.settings, autoDecideOnWebhookAlert: !(d.settings?.autoDecideOnWebhookAlert !== false) } }));
   }
 
   useEffect(() => {
@@ -2618,6 +2621,17 @@ function SettingsPage({ data, setData, session, logActivity }) {
 }`}</pre>
               </div>
               <div style={{ fontSize: 11, color: "#5B6672" }}>"machineId" must exactly match a machine already registered in Assets. Give this URL, key, and format to whoever manages your predictive maintenance system or IoT gateway.</div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#12161A", borderRadius: 7, padding: "10px 12px" }}>
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>Auto-generate a decision on High/Critical alerts</div>
+                  <div style={{ fontSize: 11, color: "#8A96A3" }}>When on, MEO immediately reasons about serious incoming alerts and creates a ready-to-approve decision — no one has to click Analyze first. Uses a small AI request each time this happens.</div>
+                </div>
+                <button onClick={canEdit ? toggleAutoDecide : undefined} style={{ width: 40, height: 22, borderRadius: 12, border: "none", background: data.settings?.autoDecideOnWebhookAlert !== false ? "#34D399" : "#2B333B", position: "relative", cursor: canEdit ? "pointer" : "default", flexShrink: 0 }}>
+                  <span style={{ position: "absolute", top: 2, left: data.settings?.autoDecideOnWebhookAlert !== false ? 20 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .15s ease" }} />
+                </button>
+              </div>
+
               {canEdit && <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}><Button variant="danger" onClick={generateWebhookKey}>Regenerate key (invalidates the old one)</Button></RoleGate>}
             </div>
           )}
