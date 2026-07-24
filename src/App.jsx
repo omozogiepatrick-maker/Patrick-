@@ -6,7 +6,8 @@ import {
   ChevronDown, RefreshCw, Loader2, Sparkles, ShieldAlert, Activity, Wrench,
   Package, Users, Settings as SettingsIcon, Hammer, PauseCircle, XCircle,
   CheckCheck, ArrowRight, Camera, FileText, Plug, Radio, GitBranch, Map,
-  LineChart, MessageCircle, Send, HelpCircle, Building2, Search, ExternalLink
+  LineChart, MessageCircle, Send, HelpCircle, Building2, Search, ExternalLink,
+  BookOpen, Tag
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
@@ -49,6 +50,9 @@ const WO_STATUS_COLOR = {
 };
 const DECISION_STATUS_COLOR = { Pending: "#F5A623", Approved: "#34D399", Delayed: "#4C9FE5", Rejected: "#E5484D" };
 const ROLES = ["Manager", "Supervisor", "Technician", "Administrator", "Executive"];
+// Light, honest tagging only — not a full cross-department coordination system.
+// Just lets people see at a glance which other departments a job touches.
+const DEPARTMENTS = ["Production", "Inventory", "Procurement", "Reliability", "Operations"];
 
 function uid(p) { return p + "_" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4); }
 function fmtDate(iso) { if (!iso) return "—"; return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); }
@@ -419,6 +423,7 @@ export default function App() {
         {tab === "fleet" && <FleetHealthMap data={data} setTab={setTab} />}
         {tab === "executive" && <ExecutiveDashboard data={data} session={session} />}
         {tab === "copilot" && <AiCopilot data={data} />}
+        {tab === "knowledgebase" && <KnowledgeBase data={data} />}
         {tab === "settings" && <SettingsPage data={data} setData={setData} session={session} logActivity={logActivity} />}
       </main>
       {tour.active && <TourOverlay step={tour.step} onNext={tourNext} onSkip={tourSkip} />}
@@ -734,6 +739,7 @@ function Sidebar({ tab, setTab, session, onLeave, notifCount, pendingDecisions, 
     { id: "livedata", label: "Live Data Monitor", icon: Radio },
     { id: "timeline", label: "Event Timeline", icon: GitBranch },
     { id: "copilot", label: assistantName ? `Ask ${assistantName}` : "AI Copilot", icon: MessageCircle },
+    { id: "knowledgebase", label: "Knowledge Base", icon: BookOpen },
     { id: "integrations", label: "Integration Center", icon: Plug },
     { id: "reports", label: "Reports", icon: BarChart3 },
     { id: "executive", label: "Executive Dashboard", icon: LineChart },
@@ -1332,6 +1338,8 @@ function buildAiPrompt(data) {
     const daysSinceLastRepair = completedWOs[0]?.completedAt ? Math.round((Date.now() - new Date(completedWOs[0].completedAt)) / 86400000) : null;
     const overdueMaintenance = m.nextMaintenance ? daysUntil(m.nextMaintenance) : null;
     const relatedParts = data.parts.filter((p) => p.machineId === m.id).map((p) => ({ name: p.name, quantity: p.quantity, minStock: p.minStock, supplier: p.supplier }));
+    const pastDecisions = data.decisions.filter((d) => d.machineId === m.id && d.status !== "Pending").sort((a, b) => new Date(b.decidedAt) - new Date(a.decidedAt)).slice(0, 5)
+      .map((d) => ({ action: d.action, outcome: d.status, managerReason: d.decisionReason || null }));
     return {
       name: m.name, machineId: m.machineId, status: m.status, criticality: m.criticality, location: m.location,
       maintenanceIntervalDays: m.intervalDays, daysSinceInstall, daysUntilNextMaintenance: overdueMaintenance,
@@ -1339,12 +1347,15 @@ function buildAiPrompt(data) {
       openAlerts: openAlerts.map((a) => ({ type: a.type, severity: a.severity, description: a.description, sensorNote: a.sensorNote || null, date: a.date })),
       lastRepair: completedWOs[0] ? { title: completedWOs[0].requiredParts, completedAt: completedWOs[0].completedAt, notes: completedWOs[0].technicianNotes || null } : null,
       knownSpareParts: relatedParts,
+      pastManagerDecisions: pastDecisions,
     };
   });
 
   return `You are the Decision Engine inside MEO, the execution layer between predictive maintenance/CMMS/IoT systems and the maintenance team. Your ONLY job: given everything happening today, tell the manager what needs attention right now, why it matters, what happens if they wait, and what to do next — using ONLY the real registered machines, alerts, repair history, and spare-parts data given below. Never invent a machine, part, technician, or event that is not in this data.
 
 If a machine has little or no logged history (few or no alerts, no completed repairs), do not guess specifics — produce a recommendation with a clearly lower confidence score, set predictedRUL to null, and say plainly in the reason that there isn't much history yet, rather than inventing a detailed diagnosis. Weight rising trends (alertsLast30Days, days past due on maintenance, repeated alert types) more heavily than a single event. Only set requiredParts using names that appear in knownSpareParts for that machine — if nothing relevant is listed, leave it as an empty string rather than inventing a part name.
+
+Learn from pastManagerDecisions: if similar recommendations for a machine were rejected or delayed before, read why (managerReason) and factor that in — e.g., if a manager rejected a similar call saying "not actually needed" or "false alarm," lower your confidence on a repeat of that same pattern and say so plainly in the reason. If a manager's past reason reveals a constraint (e.g. "waiting on budget approval," "part on backorder"), acknowledge it rather than repeating the same recommendation blindly.
 
 DATA (the complete, real set of machines — do not reference anything outside this list):
 ${JSON.stringify({ machines }, null, 2)}
@@ -1361,6 +1372,7 @@ function DecisionCenter({ data, setData, session, logActivity }) {
   const [decideModal, setDecideModal] = useState(null); // { decision, action: 'Approved'|'Delayed'|'Rejected' }
   const [simModal, setSimModal] = useState(null); // decision being simulated
   const [rcModal, setRcModal] = useState(null); // decision being root-cause-explored
+  const [justifyModal, setJustifyModal] = useState(null); // decided decision needing a justification report
   const canDecide = session.role === "Manager" || session.role === "Supervisor" || session.role === "Administrator";
 
   async function generate() {
@@ -1511,9 +1523,12 @@ function DecisionCenter({ data, setData, session, logActivity }) {
             {decided.map((d) => {
               const m = data.machines.find((m) => m.id === d.machineId);
               return (
-                <div key={d.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12.5, padding: "8px 0", borderBottom: "1px solid #2B333B", flexWrap: "wrap" }}>
+                <div key={d.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12.5, padding: "8px 0", borderBottom: "1px solid #2B333B", flexWrap: "wrap", alignItems: "center" }}>
                   <div><Badge color={DECISION_STATUS_COLOR[d.status]}>{d.status}</Badge> <span style={{ marginLeft: 8 }}>{d.action} — {m?.name}</span></div>
-                  <div style={{ color: "#5B6672" }}>{d.decidedBy}, {relTime(d.decidedAt)}{d.decisionReason ? `: "${d.decisionReason}"` : ""}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ color: "#5B6672" }}>{d.decidedBy}, {relTime(d.decidedAt)}{d.decisionReason ? `: "${d.decisionReason}"` : ""}</span>
+                    <button onClick={() => setJustifyModal(d)} style={{ background: "none", border: "1px solid #2B333B", borderRadius: 5, padding: "4px 8px", color: "#8A96A3", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>Justify to leadership</button>
+                  </div>
                 </div>
               );
             })}
@@ -1524,6 +1539,7 @@ function DecisionCenter({ data, setData, session, logActivity }) {
       {decideModal && <DecideModal decision={decideModal.decision} action={decideModal.action} machine={data.machines.find((m) => m.id === decideModal.decision.machineId)} data={data} onClose={() => setDecideModal(null)} onConfirm={confirmDecide} />}
       {simModal && <DecisionSimulatorModal decision={simModal} machine={data.machines.find((m) => m.id === simModal.machineId)} onClose={() => setSimModal(null)} />}
       {rcModal && <RootCauseModal decision={rcModal} machine={data.machines.find((m) => m.id === rcModal.machineId)} data={data} onClose={() => setRcModal(null)} />}
+      {justifyModal && <JustificationModal decision={justifyModal} machine={data.machines.find((m) => m.id === justifyModal.machineId)} onClose={() => setJustifyModal(null)} />}
     </div>
   );
 }
@@ -1641,6 +1657,52 @@ Respond with ONLY a raw JSON object (no markdown fences, no prose) in this shape
   );
 }
 
+function JustificationModal({ decision, machine, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const prompt = `Write a short, professional justification paragraph a maintenance manager could paste into a report to leadership, explaining a decision that was already made. Use ONLY the real facts given — never invent numbers or events not listed here.
+
+DECISION: ${JSON.stringify({ machine: machine?.name, action: decision.action, risk: decision.risk, downtimeCost: decision.downtimeCost, reason: decision.reason, outcome: decision.status, decidedBy: decision.decidedBy, managerNote: decision.decisionReason, recommendedTimeWindow: decision.recommendedTimeWindow })}
+
+Write 2-4 sentences, plain professional prose, no markdown, no bullet points — the kind of sentence that would satisfy a manager's boss asking "why did we do this." Include the real risk level and estimated cost figure given above.`;
+        const res = await fetch("/api/generate-priorities", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || "Request failed");
+        setText((json.text || "").trim());
+      } catch (e) {
+        setError("Couldn't generate a report right now.");
+      } finally { setLoading(false); }
+    })();
+  }, []);
+
+  function copyText() {
+    try { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch (e) { /* noop */ }
+  }
+
+  return (
+    <Modal title="Justification report" onClose={onClose}>
+      <div style={{ fontSize: 12.5, color: "#8A96A3", marginBottom: 16 }}>{decision.action} — <b style={{ color: "#EAEEF1" }}>{machine?.name}</b></div>
+      {loading ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#8A96A3", fontSize: 13 }}><Loader2 size={15} style={{ animation: "meo-spin 1s linear infinite" }} /> Writing…</div>
+      ) : error ? (
+        <div style={{ color: "#E5484D", fontSize: 13 }}>{error}</div>
+      ) : (
+        <>
+          <div style={{ background: "#12161A", borderRadius: 8, padding: 14, fontSize: 13.5, lineHeight: 1.6, color: "#EAEEF1", marginBottom: 14 }}>{text}</div>
+          <Button variant="ghost" onClick={copyText} style={{ justifyContent: "center", width: "100%" }}>{copied ? <CheckCircle2 size={14} /> : <FileText size={14} />} {copied ? "Copied" : "Copy to clipboard"}</Button>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+
 function DecideModal({ decision, action, machine, data, onClose, onConfirm }) {
   const [reason, setReason] = useState("");
   const matches = action === "Approved" && machine ? computeTechnicianMatch(machine, data) : [];
@@ -1711,7 +1773,12 @@ function WorkOrders({ data, setData, session, logActivity }) {
                       {overdue && <Badge color="#E5484D">Overdue</Badge>}
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 4 }}>{m?.name || "Unknown machine"}</div>
-                    <div style={{ fontSize: 11.5, color: "#8A96A3" }}>Assigned: {w.assignedTech} · Due {fmtDate(w.dueDate)} {w.requiredParts && `· Parts: ${w.requiredParts}`} {w.estimatedHours && `· Est. ${w.estimatedHours}h`}</div>
+                    <div style={{ fontSize: 11.5, color: "#8A96A3", marginBottom: w.affectedDepartments?.length ? 6 : 0 }}>Assigned: {w.assignedTech} · Due {fmtDate(w.dueDate)} {w.requiredParts && `· Parts: ${w.requiredParts}`} {w.estimatedHours && `· Est. ${w.estimatedHours}h`}</div>
+                    {w.affectedDepartments?.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                        {w.affectedDepartments.map((dep) => <Badge key={dep} color="#8A96A3"><Tag size={10} />{dep}</Badge>)}
+                      </div>
+                    )}
                   </div>
                   <RoleGate role={session.role} allow={["Manager", "Supervisor", "Administrator"]}>
                     <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -1737,6 +1804,10 @@ function WOModal({ wo, onClose, onSave }) {
   const [parts, setParts] = useState(wo.requiredParts || "");
   const [hours, setHours] = useState(wo.estimatedHours || "");
   const [dueDate, setDueDate] = useState(wo.dueDate ? wo.dueDate.slice(0, 10) : "");
+  const [departments, setDepartments] = useState(wo.affectedDepartments || []);
+  function toggleDept(dep) {
+    setDepartments((prev) => prev.includes(dep) ? prev.filter((d) => d !== dep) : [...prev, dep]);
+  }
   return (
     <Modal title={`Edit ${wo.woNumber}`} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1746,7 +1817,14 @@ function WOModal({ wo, onClose, onSave }) {
           <Field label="Estimated hours"><input type="number" style={inputStyle} value={hours} onChange={(e) => setHours(e.target.value)} /></Field>
           <Field label="Due date"><input type="date" style={inputStyle} value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
         </div>
-        <Button style={{ justifyContent: "center", marginTop: 6 }} disabled={!tech.trim()} onClick={() => onSave({ ...wo, requiredParts: parts, estimatedHours: hours ? Number(hours) : null, dueDate: dueDate ? new Date(dueDate).toISOString() : wo.dueDate }, tech.trim())}>Save</Button>
+        <Field label="Affected departments (optional — for visibility only)">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {DEPARTMENTS.map((dep) => (
+              <button key={dep} onClick={() => toggleDept(dep)} style={{ padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11.5, background: departments.includes(dep) ? "#4C9FE51A" : "#12161A", color: departments.includes(dep) ? "#4C9FE5" : "#8A96A3", border: "1px solid " + (departments.includes(dep) ? "#4C9FE560" : "#2B333B") }}>{dep}</button>
+            ))}
+          </div>
+        </Field>
+        <Button style={{ justifyContent: "center", marginTop: 6 }} disabled={!tech.trim()} onClick={() => onSave({ ...wo, requiredParts: parts, estimatedHours: hours ? Number(hours) : null, dueDate: dueDate ? new Date(dueDate).toISOString() : wo.dueDate, affectedDepartments: departments }, tech.trim())}>Save</Button>
       </div>
     </Modal>
   );
@@ -2350,6 +2428,69 @@ function AiCopilot({ data }) {
           <Button onClick={() => ask()} disabled={asking || !input.trim()}><Send size={14} /></Button>
         </div>
       </Card>
+    </div>
+  );
+}
+
+function KnowledgeBase({ data }) {
+  const [search, setSearch] = useState("");
+  const completed = data.workOrders.filter((w) => (w.status === "Completed" || w.status === "Closed") && (w.failureMode || w.rootCause || w.correctiveAction)).sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+
+  const failureModeCounts = {};
+  completed.forEach((w) => { if (w.failureMode) failureModeCounts[w.failureMode] = (failureModeCounts[w.failureMode] || 0) + 1; });
+  const recurring = Object.entries(failureModeCounts).filter(([, c]) => c > 1).sort((a, b) => b[1] - a[1]);
+
+  const q = search.trim().toLowerCase();
+  const filtered = completed.filter((w) => {
+    if (!q) return true;
+    const m = data.machines.find((m) => m.id === w.machineId);
+    return (m?.name || "").toLowerCase().includes(q) || (w.failureMode || "").toLowerCase().includes(q) || (w.rootCause || "").toLowerCase().includes(q);
+  });
+
+  return (
+    <div>
+      <PageHeader title="Knowledge Base" subtitle="What's been learned from real completed work — root causes, fixes, and recurring patterns." />
+
+      {recurring.length > 0 && (
+        <Card style={{ padding: 18, marginBottom: 18 }}>
+          <div style={{ fontSize: 11, color: "#F5A623", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 }}>Recurring patterns worth knowing</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {recurring.map(([mode, count]) => <Badge key={mode} color="#F5A623">{mode} — {count}x</Badge>)}
+          </div>
+        </Card>
+      )}
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ position: "relative" }}>
+          <Search size={14} color="#5B6672" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
+          <input style={{ ...inputStyle, paddingLeft: 34, width: "100%" }} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by machine, failure mode, or root cause…" />
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState icon={BookOpen} text={completed.length === 0 ? "No root-cause data yet — this fills in automatically as technicians complete work orders with root cause details." : "Nothing matches that search."} />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {filtered.map((w) => {
+            const m = data.machines.find((m) => m.id === w.machineId);
+            return (
+              <Card key={w.id} style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 600, fontSize: 13.5 }}>{m?.name || "Unknown machine"}</div>
+                  <div style={{ fontSize: 11, color: "#5B6672", fontFamily: F_MONO }}>{fmtDate(w.completedAt)}</div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5 }}>
+                  {w.failureMode && <div><span style={{ color: "#8A96A3" }}>Failure mode: </span>{w.failureMode}</div>}
+                  {w.rootCause && <div><span style={{ color: "#8A96A3" }}>Root cause: </span>{w.rootCause}</div>}
+                  {w.correctiveAction && <div><span style={{ color: "#8A96A3" }}>Fix applied: </span>{w.correctiveAction}</div>}
+                  {w.preventiveAction && <div><span style={{ color: "#8A96A3" }}>Prevention: </span>{w.preventiveAction}</div>}
+                  {w.technicianNotes && <div style={{ color: "#C7CED5", fontStyle: "italic", marginTop: 4 }}>"{w.technicianNotes}"</div>}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
